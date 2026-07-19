@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<meta name="theme-color" content="#0f172a"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-title" content="Cycling"/>
+<title>🚴 Cycling Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;overflow-x:hidden}
+.header{background:linear-gradient(135deg,#1e293b,#0f172a);padding:12px 14px 10px;border-bottom:1px solid #1e293b;position:sticky;top:0;z-index:10}
+.header-name{font-size:16px;font-weight:800;color:#f8fafc}
+.header-sub{font-size:11px;color:#64748b}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+.kpi{background:#0f172a;border-radius:8px;padding:8px 6px;border:1px solid #1e293b;text-align:center}
+.kpi-label{font-size:9px;color:#64748b;text-transform:uppercase}
+.kpi-val{font-size:20px;font-weight:800;line-height:1.1}
+.kpi-sub{font-size:9px;color:#94a3b8}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#1e293b;border-top:1px solid #334155;display:flex;z-index:20;padding-bottom:env(safe-area-inset-bottom,4px)}
+.nav-btn{flex:1;background:none;border:none;padding:10px 0 6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+.nav-icon{font-size:18px}
+.nav-lbl{font-size:9px;font-weight:600}
+.content{padding:12px 12px 80px}
+.card{background:#1e293b;border-radius:12px;padding:14px;border:1px solid #334155;margin-bottom:12px}
+.card-title{font-size:14px;font-weight:700;margin-bottom:2px}
+.card-sub{font-size:11px;color:#64748b;margin-bottom:10px}
+.ride{background:#1e293b;border-radius:10px;padding:12px;border:1px solid #334155;margin-bottom:8px;cursor:pointer}
+.ride-name{font-size:13px;font-weight:600;color:#f1f5f9}
+.ride-meta{font-size:10px;color:#64748b;margin-top:2px}
+.ride-stats{display:flex;gap:10px;margin-top:8px;flex-wrap:wrap}
+.ride-stat{font-size:11px;color:#94a3b8}
+.ride-watts{font-size:14px;font-weight:700}
+.bar-wrap{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.bar-bg{flex:1;background:#0f172a;border-radius:3px;height:16px;overflow:hidden;position:relative}
+.bar-fill{position:absolute;height:100%;border-radius:3px;opacity:.75}
+.zone-lbl{font-size:10px;width:22px;font-weight:700}
+.zone-range{font-size:10px;color:#64748b;width:70px;text-align:right}
+.zone-name{font-size:10px;color:#94a3b8;width:70px}
+input,textarea{background:#0f172a;border:1px solid #334155;border-radius:8px;color:#e2e8f0;padding:8px 10px;font-size:13px;width:100%;font-family:inherit}
+textarea{resize:vertical}
+.field-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px;margin-top:10px}
+.btn{border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;padding:10px 16px}
+.alert{padding:10px 12px;border-radius:8px;font-size:12px;margin-top:8px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.kpi-box{background:#0f172a;border-radius:8px;padding:10px}
+.kpi-box-label{font-size:10px;color:#64748b}
+.kpi-box-val{font-size:18px;font-weight:800;margin:2px 0}
+.kpi-box-sub{font-size:10px;color:#94a3b8}
+.obs{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid #1e293b;align-items:flex-start}
+.obs-dot{width:6px;height:6px;border-radius:50%;margin-top:5px;flex-shrink:0}
+.obs-date{font-size:10px;color:#64748b;width:32px;flex-shrink:0}
+.obs-text{font-size:11px;color:#94a3b8}
+.quick-q{background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:20px;padding:5px 11px;font-size:11px;cursor:pointer;margin:3px}
+.ai-box{background:#0f172a;border:1px solid #1e40af;border-radius:10px;padding:14px;margin-top:12px}
+.ai-label{font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:6px}
+.ai-text{font-size:13px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap}
+.hist-item{background:#0f172a;border-radius:8px;padding:10px;margin-bottom:6px;border:1px solid #1e293b}
+.strava-btn{background:#fc4c02;color:#fff;border:none;border-radius:10px;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;width:100%;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px}
+.sync-status{font-size:11px;padding:8px 12px;border-radius:8px;margin-top:8px}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #334155;border-top-color:#38bdf8;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:22px">🚴</span>
+      <div>
+        <div class="header-name" id="h-name">Jiří Votava</div>
+        <div class="header-sub" id="h-sub">FTP 245W · 3.18 W/kg</div>
+      </div>
+      <div style="margin-left:auto;font-size:10px;color:#64748b;text-align:right" id="sync-info"></div>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">CTL</div><div class="kpi-val" style="color:#38bdf8" id="kpi-ctl">-</div><div class="kpi-sub">Forma</div></div>
+      <div class="kpi"><div class="kpi-label">ATL</div><div class="kpi-val" style="color:#fb923c" id="kpi-atl">-</div><div class="kpi-sub">Únava</div></div>
+      <div class="kpi"><div class="kpi-label">TSB</div><div class="kpi-val" id="kpi-tsb">-</div><div class="kpi-sub" id="kpi-tsb-lbl">-</div></div>
+      <div class="kpi"><div class="kpi-label">FTP</div><div class="kpi-val" style="color:#a78bfa" id="kpi-ftp">245W</div><div class="kpi-sub" id="kpi-wkg">3.18 W/kg</div></div>
+    </div>
+  </div>
+  <div class="content" id="content"></div>
+  <nav class="nav">
+    <button class="nav-btn" onclick="showTab('forma')"><span class="nav-icon">📈</span><span class="nav-lbl" id="nl-forma" style="color:#38bdf8">Forma</span></button>
+    <button class="nav-btn" onclick="showTab('power')"><span class="nav-icon">⚡</span><span class="nav-lbl" id="nl-power">Power</span></button>
+    <button class="nav-btn" onclick="showTab('jizdy')"><span class="nav-icon">🚴</span><span class="nav-lbl" id="nl-jizdy">Jízdy</span></button>
+    <button class="nav-btn" onclick="showTab('tf')"><span class="nav-icon">❤️</span><span class="nav-lbl" id="nl-tf">TF</span></button>
+    <button class="nav-btn" onclick="showTab('admin')"><span class="nav-icon">⚙️</span><span class="nav-lbl" id="nl-admin">Admin</span></button>
+  </nav>
+</div>
+
+<script>
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const CLIENT_ID = "265810";
+const REDIRECT_URI = "https://jirka-cz.github.io/cycling/";
+const SCOPE = "activity:read_all";
+
+const DEFAULT = {
+  name:"Jiří Votava", ftp:245, weight:77, maxHr:178, restHr:48,
+  goal:"Zvýšit FTP na 270W a VO2max do konce roku 2026.",
+  notes:"Po střevních potížích v červenci — TF elevovaná +12bpm. Regenerace priorita.",
+  sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině. Vždy vezmi v úvahu CTL/ATL/TSB, historii jízd a zdravotní stav.",
+  quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],
+};
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let S = JSON.parse(localStorage.getItem("cyc_s")||"null") || {...DEFAULT};
+let RIDES = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
+let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
+let currentTab = "forma";
+let selRide = null;
+let aiLoading = false;
+let FITNESS = [];
+let LATEST = {ctl:0,atl:0,tsb:0};
+
+// ── STRAVA OAUTH ──────────────────────────────────────────────────────────────
+function stravaLogin() {
+  const url = `https://www.strava.com/oauth/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=${SCOPE}`;
+  window.location.href = url;
+}
+
+async function handleOAuthCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  if (!code) return false;
+
+  // Clean URL
+  window.history.replaceState({}, "", window.location.pathname);
+
+  showSyncStatus("🔄 Přihlašuji ke Stravě...", "#38bdf8");
+
+  // Exchange code for token - use Strava's token endpoint via a proxy approach
+  // Since we can't store client_secret in frontend, we use the implicit approach
+  // User must provide client_secret once in admin
+  const secret = localStorage.getItem("cyc_secret");
+  if (!secret) {
+    showSyncStatus("⚠️ Nejprve zadej Client Secret v Admin sekci!", "#fbbf24");
+    showTab("admin");
+    return true;
+  }
+
+  try {
+    const res = await fetch("https://www.strava.com/oauth/token", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        client_id: CLIENT_ID,
+        client_secret: secret,
+        code: code,
+        grant_type: "authorization_code"
+      })
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      localStorage.setItem("cyc_token", data.access_token);
+      localStorage.setItem("cyc_refresh", data.refresh_token);
+      localStorage.setItem("cyc_token_exp", data.expires_at);
+      showSyncStatus("✅ Přihlášen! Stahuji jízdy...", "#34d399");
+      await syncRides(data.access_token);
+    } else {
+      showSyncStatus("❌ Chyba přihlášení: " + (data.message||"Zkus znovu"), "#ef4444");
+    }
+  } catch(e) {
+    showSyncStatus("❌ Chyba: " + e.message, "#ef4444");
+  }
+  return true;
+}
+
+async function refreshToken() {
+  const refresh = localStorage.getItem("cyc_refresh");
+  const secret = localStorage.getItem("cyc_secret");
+  if (!refresh || !secret) return null;
+  try {
+    const res = await fetch("https://www.strava.com/oauth/token", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({client_id:CLIENT_ID, client_secret:secret, refresh_token:refresh, grant_type:"refresh_token"})
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      localStorage.setItem("cyc_token", data.access_token);
+      localStorage.setItem("cyc_token_exp", data.expires_at);
+      return data.access_token;
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function getValidToken() {
+  const exp = parseInt(localStorage.getItem("cyc_token_exp")||"0");
+  const now = Math.floor(Date.now()/1000);
+  if (exp - now < 300) {
+    return await refreshToken();
+  }
+  return localStorage.getItem("cyc_token");
+}
+
+async function syncRides(token) {
+  showSyncStatus('<span class="spinner"></span>Stahuji jízdy ze Stravy...', "#38bdf8");
+  try {
+    // Find newest cached ride date for incremental sync
+    const cached = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
+    let after = 0;
+    if (cached.length > 0) {
+      const newest = cached.reduce((a,b) => a.date > b.date ? a : b);
+      after = Math.floor(new Date(newest.date).getTime()/1000) + 1;
+    }
+
+    let page = 1, newRides = [], hasMore = true;
+    while (hasMore) {
+      let url = `https://www.strava.com/api/v3/athlete/activities?per_page=100&page=${page}`;
+      if (after > 0) url += `&after=${after}`;
+      const res = await fetch(url, {headers:{Authorization:`Bearer ${token}`}});
+      const acts = await res.json();
+      if (!Array.isArray(acts) || acts.length === 0) { hasMore=false; break; }
+
+      acts.forEach(a => {
+        if (!["Ride","VirtualRide"].includes(a.sport_type || a.type)) return;
+        const watts = a.average_watts || 0;
+        const tss = watts > 0 && S.ftp > 0
+          ? Math.round((a.moving_time / 3600) * (watts/S.ftp) * (watts/S.ftp) * 100)
+          : Math.round(a.suffer_score || 30);
+        newRides.push({
+          id: String(a.id),
+          name: a.name,
+          date: a.start_date_local?.slice(0,10) || "",
+          type: a.sport_type || a.type,
+          tss,
+          watts: Math.round(watts),
+          hr: Math.round(a.average_heartrate || 0),
+          dur: a.moving_time || 0,
+          km: Math.round((a.distance||0)/100)/10,
+          elev: Math.round(a.total_elevation_gain||0),
+          kcal: a.calories || 0,
+          kudos: a.kudos_count || 0,
+          prs: a.pr_count || 0,
+        });
+      });
+      if (acts.length < 100) hasMore = false;
+      page++;
+    }
+
+    // Merge with cached (new rides first, avoid duplicates)
+    const existingIds = new Set(cached.map(r=>r.id));
+    const merged = [...newRides.filter(r=>!existingIds.has(r.id)), ...cached];
+    merged.sort((a,b) => b.date.localeCompare(a.date));
+
+    RIDES = merged;
+    localStorage.setItem("cyc_rides", JSON.stringify(RIDES));
+    localStorage.setItem("cyc_last_sync", new Date().toLocaleString("cs-CZ"));
+
+    recompute();
+    updateHeader();
+    showTab(currentTab);
+    const newCount = newRides.filter(r=>!existingIds.has(r.id)).length;
+    showSyncStatus(`✅ Synchronizováno! ${newCount} nových jízd, celkem ${RIDES.length}`, "#34d399");
+  } catch(e) {
+    showSyncStatus("❌ Chyba stahování: " + e.message, "#ef4444");
+  }
+}
+
+function showSyncStatus(msg, color) {
+  const el = document.getElementById("sync-info");
+  if (el) el.innerHTML = `<span style="color:${color}">${msg}</span>`;
+}
+
+// ── FITNESS CALC ──────────────────────────────────────────────────────────────
+function recompute() {
+  if (RIDES.length === 0) { FITNESS=[]; LATEST={ctl:0,atl:0,tsb:0}; return; }
+  const byDate = {};
+  RIDES.forEach(r => { if(r.tss) byDate[r.date]=(byDate[r.date]||0)+r.tss; });
+  const dates = Object.keys(byDate).sort();
+  const start = new Date(dates[0]);
+  const end = new Date();
+  const res = []; let ctl=20, atl=20;
+  for (let d=new Date(start); d<=end; d.setDate(d.getDate()+1)) {
+    const ds = d.toISOString().slice(0,10);
+    const tss = byDate[ds]||0;
+    ctl=ctl+(tss-ctl)/42; atl=atl+(tss-atl)/7;
+    res.push({date:ds,label:ds.slice(5),ctl:+(ctl.toFixed(1)),atl:+(atl.toFixed(1)),tsb:+((ctl-atl).toFixed(1)),tss});
+  }
+  FITNESS = res;
+  LATEST = res[res.length-1];
+}
+
+function getZones(ftp) {
+  return [
+    {z:"Z1",n:"Regenerace",  min:0,               max:Math.round(ftp*.55),c:"#94a3b8"},
+    {z:"Z2",n:"Aerobní",     min:Math.round(ftp*.55),max:Math.round(ftp*.75),c:"#34d399"},
+    {z:"Z3",n:"Tempo",       min:Math.round(ftp*.75),max:Math.round(ftp*.90),c:"#fbbf24"},
+    {z:"Z4",n:"Práh/SST",    min:Math.round(ftp*.90),max:Math.round(ftp*1.05),c:"#f97316"},
+    {z:"Z5",n:"VO2max",      min:Math.round(ftp*1.05),max:Math.round(ftp*1.20),c:"#ef4444"},
+    {z:"Z6",n:"Anaerobní",   min:Math.round(ftp*1.20),max:9999,c:"#a855f7"},
+  ];
+}
+function getZone(w) { return getZones(S.ftp).find(z=>w>=z.min&&w<z.max)||getZones(S.ftp)[0]; }
+
+// ── SVG CHARTS ────────────────────────────────────────────────────────────────
+function svgLine(data, keys, colors, H=160) {
+  const W=360,pad={t:10,r:10,b:28,l:34};
+  const cw=W-pad.l-pad.r, ch=H-pad.t-pad.b;
+  const vals=data.flatMap(d=>keys.map(k=>d[k]||0));
+  const minV=Math.min(...vals)-3, maxV=Math.max(...vals)+3;
+  const px=i=>pad.l+i/(data.length-1||1)*cw;
+  const py=v=>pad.t+ch-(v-minV)/(maxV-minV||1)*ch;
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
+  for(let i=0;i<=3;i++){const y=pad.t+i*ch/3;const v=Math.round(maxV-(maxV-minV)*i/3);s+=`<line x1="${pad.l}" y1="${y}" x2="${W-pad.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/><text x="${pad.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`;}
+  const step=Math.max(1,Math.floor(data.length/6));
+  data.forEach((d,i)=>{if(i%step===0)s+=`<text x="${px(i)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label}</text>`;});
+  if(keys.includes('tsb')){const y0=py(0);s+=`<line x1="${pad.l}" y1="${y0}" x2="${W-pad.r}" y2="${y0}" stroke="#475569" stroke-width="1" stroke-dasharray="4"/>`;}
+  keys.forEach((k,ki)=>{const pts=data.map((d,i)=>`${px(i)},${py(d[k]||0)}`).join(" ");s+=`<polyline points="${pts}" fill="none" stroke="${colors[ki]}" stroke-width="2"/>`;});
+  return s+`</svg>`;
+}
+
+function svgBar(data, key, color, H=160, refVal=null) {
+  const W=360,pad={t:10,r:10,b:28,l:34};
+  const cw=W-pad.l-pad.r, ch=H-pad.t-pad.b;
+  const vals=data.map(d=>d[key]||0);
+  const maxV=Math.max(...vals)*1.1||1;
+  const bw=Math.max(6,cw/data.length-2);
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
+  for(let i=0;i<=3;i++){const y=pad.t+i*ch/3;s+=`<line x1="${pad.l}" y1="${y}" x2="${W-pad.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/><text x="${pad.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${Math.round(maxV-maxV*i/3)}</text>`;}
+  data.forEach((d,i)=>{
+    const x=pad.l+i*(cw/data.length)+(cw/data.length-bw)/2;
+    const bh=((d[key]||0)/maxV)*ch;
+    const y=pad.t+ch-bh;
+    s+=`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"/>`;
+    s+=`<text x="${x+bw/2}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label||d.d||""}</text>`;
+  });
+  if(refVal){const y=pad.t+ch-(refVal/maxV)*ch;s+=`<line x1="${pad.l}" y1="${y}" x2="${W-pad.r}" y2="${y}" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5"/><text x="${W-pad.r}" y="${y-3}" text-anchor="end" fill="#a78bfa" font-size="9">FTP</text>`;}
+  return s+`</svg>`;
+}
+
+// ── HEADER ────────────────────────────────────────────────────────────────────
+function updateHeader() {
+  const tsb=LATEST.tsb||0;
+  const tc=tsb>5?"#34d399":tsb>-10?"#fbbf24":"#ef4444";
+  const tl=tsb>5?"Svěží":tsb>-10?"Neutrální":"Unavený";
+  document.getElementById("h-name").textContent=S.name;
+  document.getElementById("h-sub").textContent=`FTP ${S.ftp}W · ${(S.ftp/S.weight).toFixed(2)} W/kg · ${RIDES.length} jízd`;
+  document.getElementById("kpi-ctl").textContent=LATEST.ctl||"-";
+  document.getElementById("kpi-atl").textContent=LATEST.atl||"-";
+  document.getElementById("kpi-tsb").textContent=LATEST.tsb||"-";
+  document.getElementById("kpi-tsb").style.color=tc;
+  document.getElementById("kpi-tsb-lbl").textContent=tl;
+  document.getElementById("kpi-ftp").textContent=S.ftp+"W";
+  document.getElementById("kpi-wkg").textContent=(S.ftp/S.weight).toFixed(2)+" W/kg";
+  const ls=localStorage.getItem("cyc_last_sync");
+  if(ls) document.getElementById("sync-info").innerHTML=`<span style="color:#475569">Sync: ${ls}</span>`;
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function showTab(tab) {
+  currentTab=tab;
+  ["forma","power","jizdy","tf","admin"].forEach(t=>{
+    document.getElementById("nl-"+t).style.color=t===tab?"#38bdf8":"#64748b";
+  });
+  const c=document.getElementById("content");
+  if(tab==="forma")  c.innerHTML=renderForma();
+  if(tab==="power")  c.innerHTML=renderPower();
+  if(tab==="jizdy")  c.innerHTML=renderJizdy();
+  if(tab==="tf")     c.innerHTML=renderTF();
+  if(tab==="admin")  { c.innerHTML=renderAdmin(); }
+}
+
+// ── FORMA ─────────────────────────────────────────────────────────────────────
+function renderForma() {
+  if(FITNESS.length===0) return noDataMsg();
+  const sampled=FITNESS.filter((_,i)=>i%Math.max(1,Math.floor(FITNESS.length/60))===0);
+  const tsb=LATEST.tsb, tc=tsb>5?"#34d399":tsb>-10?"#fbbf24":"#ef4444";
+  const tl=tsb>5?"Svěží":tsb>-10?"Neutrální":"Unavený";
+  const tm=tsb<-10?"⚠️ Více regenerace před intenzitou.":tsb>10?"✅ Ideální čas na intenzitu.":"→ Trénuj opatrně.";
+  return `
+  <div class="card">
+    <div class="card-title">CTL / ATL — Forma & Únava</div>
+    <div class="card-sub">Modrá = základ (42d) · Oranžová = únava (7d)</div>
+    ${svgLine(sampled,["ctl","atl"],["#38bdf8","#fb923c"])}
+    <div style="display:flex;gap:16px;margin-top:4px">
+      <span style="font-size:11px;color:#38bdf8">● CTL Forma</span>
+      <span style="font-size:11px;color:#fb923c">● ATL Únava</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">TSB — Svěžest</div>
+    <div class="card-sub"><span style="color:#34d399">Zelená >5</span>: svěží · <span style="color:#fbbf24">Žlutá</span>: neutrální · <span style="color:#ef4444">Červená &lt;-10</span>: unavený</div>
+    ${svgLine(sampled,["tsb"],["#a78bfa"],140)}
+    <div class="alert" style="background:#0f172a;border:1px solid #334155">
+      <span style="color:${tc};font-weight:700">TSB: ${tsb} — ${tl}</span>
+      <span style="color:#64748b;margin-left:8px">${tm}</span>
+    </div>
+  </div>`;
+}
+
+// ── POWER ─────────────────────────────────────────────────────────────────────
+function renderPower() {
+  if(RIDES.length===0) return noDataMsg();
+  const ftp=S.ftp, zones=getZones(ftp);
+  const mx=Math.round(ftp*1.5);
+  // Build power curve from cached rides
+  const durations=[5/60,15/60,.5,1,2,3,5,10,20,30,60];
+  const pcLabels=["5s","15s","30s","1min","2min","3min","5min","10min","20min","30min","1hod"];
+  // Use best watts per ride as approximation
+  const topWatts=RIDES.filter(r=>r.watts>0).map(r=>r.watts);
+  const bestWatts=topWatts.length>0?Math.max(...topWatts):ftp;
+  const pcData=pcLabels.map((l,i)=>{
+    const decay=Math.pow(0.96,i);
+    return {d:l,w:Math.round(bestWatts*decay)};
+  });
+  const zonesHTML=zones.map(z=>{
+    const left=(z.min/mx)*100;
+    const w=((Math.min(z.max===9999?mx:z.max,mx)/mx)*100)-left;
+    return `<div class="bar-wrap">
+      <div class="zone-lbl" style="color:${z.c}">${z.z}</div>
+      <div class="bar-bg"><div class="bar-fill" style="left:${left}%;width:${w}%;background:${z.c}"></div></div>
+      <div class="zone-name">${z.n}</div>
+      <div class="zone-range">${z.min}–${z.max===9999?"∞":z.max}W</div>
+    </div>`;
+  }).join("");
+  return `
+  <div class="card">
+    <div class="card-title">Power Curve (odhad)</div>
+    <div class="card-sub">Odvozeno z nejlepšího výkonu jízd · FTP ${ftp}W</div>
+    ${svgBar(pcData,"w","#38bdf8",160,ftp)}
+  </div>
+  <div class="card">
+    <div class="card-title">Výkonnostní zóny · FTP ${ftp}W</div>
+    <div style="margin-top:8px">${zonesHTML}</div>
+  </div>
+  <div class="card">
+    <div class="grid2">
+      <div class="kpi-box"><div class="kpi-box-label">Celkem jízd</div><div class="kpi-box-val" style="color:#38bdf8">${RIDES.length}</div><div class="kpi-box-sub">v databázi</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Best watts</div><div class="kpi-box-val" style="color:#34d399">${bestWatts}W</div><div class="kpi-box-sub">průměr jízdy</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">W/kg</div><div class="kpi-box-val" style="color:#a78bfa">${(ftp/S.weight).toFixed(2)}</div><div class="kpi-box-sub">na FTP</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Celk. km</div><div class="kpi-box-val" style="color:#fbbf24">${Math.round(RIDES.reduce((s,r)=>s+r.km,0))}</div><div class="kpi-box-sub">v databázi</div></div>
+    </div>
+  </div>`;
+}
+
+// ── JÍZDY ─────────────────────────────────────────────────────────────────────
+function renderJizdy() {
+  if(RIDES.length===0) return noDataMsg();
+  const ftp=S.ftp;
+  const recent=RIDES.slice(0,20);
+  return `<div style="font-size:12px;color:#64748b;margin-bottom:8px">Posledních ${recent.length} jízd · klikni pro detail</div>`+
+  recent.map(r=>{
+    const z=getZone(r.watts||0);
+    const sel=selRide===r.id;
+    const detail=sel?`<div style="margin-top:8px;padding:8px 10px;background:#0f172a;border-radius:8px;font-size:11px;color:#94a3b8">
+      W/bpm: <span style="color:#38bdf8;font-weight:700">${r.hr>0?(r.watts/r.hr).toFixed(2):"–"}</span>
+      &nbsp;· Intenzita: <span style="color:${z.c};font-weight:700">${ftp>0?Math.round(r.watts/ftp*100):"-"}% FTP</span>
+      &nbsp;· TSS: <span style="color:#a78bfa;font-weight:700">${r.tss}</span>
+      ${r.prs>0?`&nbsp;· 🏆 ${r.prs} PR`:""}
+    </div>`:"";
+    return `<div class="ride" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1;min-width:0">
+          <div class="ride-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</div>
+          <div class="ride-meta">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;margin-left:8px">
+          <div class="ride-watts" style="color:${z.c}">${r.watts>0?r.watts+"W":"–"}</div>
+          <div style="font-size:9px;color:#64748b">${z.n}</div>
+        </div>
+      </div>
+      <div class="ride-stats">
+        <span class="ride-stat">📍 ${r.km.toFixed(0)}km</span>
+        <span class="ride-stat">⏱ ${Math.round(r.dur/60)}min</span>
+        <span class="ride-stat">⛰ ${r.elev}m</span>
+        ${r.hr>0?`<span class="ride-stat">❤️ ${r.hr}bpm</span>`:""}
+        <span class="ride-stat">🔥 ${r.tss}TSS</span>
+      </div>
+      ${detail}
+    </div>`;
+  }).join("");
+}
+
+function toggleRide(id) {
+  selRide=selRide===id?null:id;
+  if(currentTab==="jizdy") document.getElementById("content").innerHTML=renderJizdy();
+}
+
+// ── TF ────────────────────────────────────────────────────────────────────────
+function renderTF() {
+  if(RIDES.length===0) return noDataMsg();
+  const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80)
+    .slice(0,30).reverse()
+    .map(r=>({label:r.date.slice(5),ratio:+(r.watts/r.hr).toFixed(2),watts:r.watts,hr:r.hr}));
+  // Weekly volume
+  const weekVol={};
+  RIDES.forEach(r=>{
+    const d=new Date(r.date); d.setDate(d.getDate()-d.getDay());
+    const wk=d.toISOString().slice(0,10);
+    weekVol[wk]=(weekVol[wk]||0)+Math.round(r.dur/3600*10)/10;
+  });
+  const wkData=Object.entries(weekVol).sort((a,b)=>a[0]>b[0]?1:-1).slice(-12)
+    .map(([d,h])=>({label:d.slice(5),h}));
+  return `
+  <div class="card">
+    <div class="card-title">Poměr W/bpm — Aerobní efektivita</div>
+    <div class="card-sub">Vyšší = efektivnější srdce · Trend ↑ = lepší kondice</div>
+    ${svgLine(hrData,["ratio"],["#34d399"],150)}
+  </div>
+  <div class="card">
+    <div class="card-title">Týdenní objem (hodiny)</div>
+    <div class="card-sub">Posledních 12 týdnů</div>
+    ${svgBar(wkData,"h","#38bdf8",150)}
+  </div>
+  <div class="card">
+    <div class="card-title">📊 Statistiky</div>
+    <div class="grid2" style="margin-top:8px">
+      <div class="kpi-box"><div class="kpi-box-label">Celk. hodiny</div><div class="kpi-box-val" style="color:#38bdf8">${Math.round(RIDES.reduce((s,r)=>s+r.dur,0)/3600)}</div><div class="kpi-box-sub">na kole</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Průměr TF</div><div class="kpi-box-val" style="color:#fb923c">${Math.round(RIDES.filter(r=>r.hr>0).reduce((s,r)=>s+r.hr,0)/Math.max(1,RIDES.filter(r=>r.hr>0).length))}</div><div class="kpi-box-sub">bpm</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Průměr watts</div><div class="kpi-box-val" style="color:#fbbf24">${Math.round(RIDES.filter(r=>r.watts>0).reduce((s,r)=>s+r.watts,0)/Math.max(1,RIDES.filter(r=>r.watts>0).length))}</div><div class="kpi-box-sub">W průměr</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Celk. výška</div><div class="kpi-box-val" style="color:#a78bfa">${Math.round(RIDES.reduce((s,r)=>s+r.elev,0)/1000)}k</div><div class="kpi-box-sub">metrů</div></div>
+    </div>
+  </div>`;
+}
+
+// ── ADMIN ─────────────────────────────────────────────────────────────────────
+function renderAdmin() {
+  const hasToken=!!localStorage.getItem("cyc_token");
+  const hasSecret=!!localStorage.getItem("cyc_secret");
+  const lastSync=localStorage.getItem("cyc_last_sync")||"nikdy";
+  return `
+  <div class="card">
+    <div style="font-size:15px;font-weight:800;color:#fc4c02;margin-bottom:4px">🔶 Strava Sync</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">Data se stáhnou a uloží v telefonu. Po každé jízdě klikni "Synchronizovat".</div>
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">Poslední sync: <strong>${lastSync}</strong> · Jízd v cache: <strong>${RIDES.length}</strong></div>
+
+    ${!hasSecret?`
+    <div style="background:#1a1200;border:1px solid #854d0e;border-radius:8px;padding:12px;margin-bottom:10px;font-size:12px;color:#fbbf24">
+      ⚠️ Nejprve zadej Client Secret ze Strava API (developers.strava.com → tvoje app).
+    </div>
+    <div class="field-label">Client Secret (zadej jednou, uloží se bezpečně)</div>
+    <input type="password" id="secret-input" placeholder="Vlož Strava Client Secret...">
+    <button class="btn" onclick="saveSecret()" style="background:#854d0e;margin-top:8px;width:100%">🔑 Uložit Client Secret</button>
+    `:`
+    <div style="background:#0f2a1a;border:1px solid #166534;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#34d399">
+      ✅ Client Secret uložen · ${hasToken?"Token aktivní":"Potřeba přihlášení"}
+    </div>
+    <button class="strava-btn" onclick="stravaLogin()">🔶 ${hasToken?"Synchronizovat nové jízdy":"Přihlásit se přes Strava"}</button>
+    <button class="btn" onclick="forceSync()" style="background:#334155;margin-top:8px;width:100%;font-size:12px">🔄 Obnovit token a sync</button>
+    <button class="btn" onclick="clearSecret()" style="background:#7f1d1d;margin-top:6px;width:100%;font-size:11px">🗑 Smazat Client Secret</button>
+    `}
+    <div id="sync-msg" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:15px;font-weight:800;color:#a78bfa;margin-bottom:4px">⚙️ Nastavení</div>
+    <div class="grid2">
+      <div>
+        <div class="field-label">Jméno</div><input id="s-name" value="${S.name}">
+        <div class="field-label">FTP (W)</div><input id="s-ftp" type="number" value="${S.ftp}">
+        <div class="field-label">Váha (kg)</div><input id="s-weight" type="number" value="${S.weight}">
+      </div>
+      <div>
+        <div class="field-label">Max TF</div><input id="s-maxhr" type="number" value="${S.maxHr}">
+        <div class="field-label">Klidová TF</div><input id="s-resthr" type="number" value="${S.restHr}">
+        <div style="background:#0f172a;border-radius:8px;padding:8px;margin-top:10px;font-size:11px;color:#64748b">
+          W/kg: <span style="color:#a78bfa;font-weight:700">${(S.ftp/S.weight).toFixed(2)}</span>
+        </div>
+      </div>
+    </div>
+    <div class="field-label">Tréninkový cíl</div>
+    <textarea id="s-goal" rows="2">${S.goal}</textarea>
+    <div class="field-label">Zdravotní poznámky</div>
+    <textarea id="s-notes" rows="2">${S.notes}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn" id="save-btn" onclick="saveSettings()" style="flex:1;background:#1e40af">💾 Uložit</button>
+      <button class="btn" onclick="clearAllData()" style="background:#7f1d1d;font-size:11px">🗑 Smazat vše</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:15px;font-weight:800;color:#38bdf8;margin-bottom:4px">🤖 AI Trenér</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">Zná tvé FTP, CTL/ATL/TSB, cíle a poslední jízdy z databáze.</div>
+    <div class="field-label">System prompt</div>
+    <textarea id="s-prompt" rows="2">${S.sysPrompt}</textarea>
+    <div style="margin:8px 0;display:flex;flex-wrap:wrap">
+      ${S.quickQ.map(q=>`<button class="quick-q" onclick="setQ(\`${q}\`)">${q}</button>`).join("")}
+    </div>
+    <div class="field-label">Dotaz</div>
+    <textarea id="ai-q" rows="3" placeholder="Jak jsem na tom? Co jet zítra?..."></textarea>
+    <button class="btn" id="ai-btn" onclick="askAI()" style="width:100%;margin-top:8px;background:#1e40af">🤖 Zeptat se AI trenéra</button>
+    <div id="ai-response"></div>
+    ${aiHistory.length>0?`
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px">📋 Historie</div>
+      ${aiHistory.map((h,i)=>`
+        <div class="hist-item">
+          <div style="font-size:10px;color:#475569">🕐 ${h.ts}</div>
+          <div style="font-size:11px;color:#38bdf8;font-weight:600;margin:3px 0">❓ ${h.q}</div>
+          <div style="font-size:11px;color:#94a3b8">${h.a.slice(0,200)}${h.a.length>200?"…":""}</div>
+          ${h.a.length>200?`<button onclick="showFullAI(${i})" style="background:none;border:none;color:#3b82f6;font-size:10px;cursor:pointer">Zobrazit celé →</button>`:""}
+        </div>`).join("")}
+      <button onclick="clearAI()" style="background:#7f1d1d;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer">🗑 Vymazat historii</button>
+    </div>`:""}
+  </div>`;
+}
+
+function noDataMsg() {
+  return `<div class="card" style="text-align:center;padding:40px 20px">
+    <div style="font-size:40px;margin-bottom:12px">🔶</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:8px">Nejsou žádná data</div>
+    <div style="font-size:13px;color:#64748b;margin-bottom:16px">Synchronizuj svou Strava v sekci Admin</div>
+    <button class="btn" onclick="showTab('admin')" style="background:#fc4c02">⚙️ Přejít do Admin</button>
+  </div>`;
+}
+
+function saveSecret() {
+  const v=document.getElementById("secret-input")?.value?.trim();
+  if(!v){alert("Zadej Client Secret!");return;}
+  localStorage.setItem("cyc_secret",v);
+  showTab("admin");
+}
+
+function clearSecret() {
+  if(confirm("Smazat Client Secret?")){localStorage.removeItem("cyc_secret");localStorage.removeItem("cyc_token");localStorage.removeItem("cyc_refresh");showTab("admin");}
+}
+
+async function forceSync() {
+  const token=await getValidToken();
+  if(token) await syncRides(token);
+  else stravaLogin();
+}
+
+function clearAllData() {
+  if(confirm("Smazat VŠECHNA data včetně jízd?")){
+    ["cyc_s","cyc_rides","cyc_ai","cyc_last_sync"].forEach(k=>localStorage.removeItem(k));
+    RIDES=[]; FITNESS=[]; LATEST={ctl:0,atl:0,tsb:0};
+    S={...DEFAULT}; updateHeader(); showTab("admin");
+  }
+}
+
+function saveSettings() {
+  S.name=document.getElementById("s-name")?.value||S.name;
+  S.ftp=Number(document.getElementById("s-ftp")?.value)||S.ftp;
+  S.weight=Number(document.getElementById("s-weight")?.value)||S.weight;
+  S.maxHr=Number(document.getElementById("s-maxhr")?.value)||S.maxHr;
+  S.restHr=Number(document.getElementById("s-resthr")?.value)||S.restHr;
+  S.goal=document.getElementById("s-goal")?.value||S.goal;
+  S.notes=document.getElementById("s-notes")?.value||S.notes;
+  S.sysPrompt=document.getElementById("s-prompt")?.value||S.sysPrompt;
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  recompute(); updateHeader();
+  const btn=document.getElementById("save-btn");
+  if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit";btn.style.background="#1e40af";},2000);}
+}
+
+function setQ(q){const el=document.getElementById("ai-q");if(el)el.value=q;}
+
+async function askAI() {
+  if(aiLoading)return;
+  const q=document.getElementById("ai-q")?.value?.trim();
+  if(!q)return;
+  aiLoading=true;
+  const btn=document.getElementById("ai-btn");
+  if(btn){btn.textContent="⏳ Analyzuji...";btn.style.background="#334155";}
+  const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${r.tss}`).join(" | ");
+  const ctx=`Sportovec: ${S.name}, ${S.weight}kg, FTP ${S.ftp}W (${(S.ftp/S.weight).toFixed(2)} W/kg). CTL=${LATEST.ctl}, ATL=${LATEST.atl}, TSB=${LATEST.tsb}. Celkem ${RIDES.length} jízd. Cíl: ${S.goal}. Poznámky: ${S.notes}. Poslední jízdy: ${recent}`;
+  try {
+    const res=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:800,system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
+    });
+    const data=await res.json();
+    const ans=data.content?.[0]?.text||"Chyba odpovědi.";
+    const entry={q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
+    aiHistory=[entry,...aiHistory].slice(0,8);
+    localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
+    const rb=document.getElementById("ai-response");
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${ans}</div></div>`;
+  } catch(e){
+    const rb=document.getElementById("ai-response");
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">Chyba: ${e.message}</div></div>`;
+  }
+  aiLoading=false;
+  if(btn){btn.textContent="🤖 Zeptat se AI trenéra";btn.style.background="#1e40af";}
+}
+
+function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${aiHistory[i].a}</div></div>`;}
+function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");showTab("admin");}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+recompute();
+updateHeader();
+
+// Handle OAuth callback
+handleOAuthCallback().then(wasCallback => {
+  if(!wasCallback) showTab("forma");
+});
+</script>
+</body>
+</html>
