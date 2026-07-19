@@ -66,7 +66,7 @@ textarea{resize:vertical}
 #chart-tooltip b{font-weight:800}
 svg[data-cid]{touch-action:none;cursor:crosshair}
 .chart-zoom{position:relative;overflow:hidden;border-radius:8px}
-.chart-zoom-inner{transform-origin:0 0;will-change:transform}
+.zoom-range{font-size:9px;color:#475569;text-align:center;margin-top:2px}
 .zoom-ctrl{position:absolute;top:2px;right:2px;display:flex;flex-direction:column;gap:4px;z-index:5}
 .zoom-btn{width:24px;height:24px;border-radius:6px;background:rgba(15,23,42,.85);border:1px solid #334155;color:#e2e8f0;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;padding:0}
 .zoom-btn:active{background:#1e40af}
@@ -342,9 +342,9 @@ function svgLine(data,keys,colors,H=160,unit="",labels=null){
   const py=v=>p.t+ch-(v-minV)/(maxV-minV||1)*ch;
   let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
   const step=Math.max(1,Math.floor(data.length/6));
-  data.forEach((d,i)=>{if(i%step===0)s+=`<line x1="${px(i)}" y1="${p.t}" x2="${px(i)}" y2="${H-p.b}" stroke="#1e293b" stroke-width="1"/>`;});
+  data.forEach((d,i)=>{if(i%step===0)s+=`<line x1="${px(i)}" y1="${p.t}" x2="${px(i)}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
   for(let i=0;i<=3;i++){const y=p.t+i*ch/3;const v=Math.round(maxV-(maxV-minV)*i/3);
-    s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
+    s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;
     s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`;}
   data.forEach((d,i)=>{if(i%step===0)s+=`<text x="${px(i)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label}</text>`;});
   if(keys.includes('tsb')){const y0=py(0);s+=`<line x1="${p.l}" y1="${y0}" x2="${W-p.r}" y2="${y0}" stroke="#475569" stroke-dasharray="4" stroke-width="1"/>`;}
@@ -363,8 +363,8 @@ function svgBar(data,key,color,H=150,refVal=null,unit="",label="FTP"){
   const bw=Math.max(6,cw/data.length-2);
   let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
   data.forEach((d,i)=>{const cx=p.l+i*(cw/data.length)+(cw/data.length)/2;
-    s+=`<line x1="${cx}" y1="${p.t}" x2="${cx}" y2="${H-p.b}" stroke="#1e293b" stroke-width="1"/>`;});
-  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
+    s+=`<line x1="${cx}" y1="${p.t}" x2="${cx}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
+  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;
     s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${Math.round(maxV-maxV*i/3)}</text>`;}
   data.forEach((d,i)=>{
     const x=p.l+i*(cw/data.length)+(cw/data.length-bw)/2;
@@ -418,88 +418,142 @@ function chartTip(e){
 function hideTip(){const tip=document.getElementById('chart-tooltip');if(tip)tip.style.display='none';}
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('svg[data-cid]'))hideTip();});
 
-// ── CHART ZOOM / PAN (kolečko myši, +/- tlačítka, pinch na mobilu) ─────────────
-const _zoomState={};
-function zoomWrap(svgHtml,zid){
-  if(!_zoomState[zid])_zoomState[zid]={scale:1,tx:0,ty:0};
+// ── ZOOM CHARTS — přiblížení konkrétního ROZSAHU DAT (jako na intervals.icu) ───
+// Dva prsty od sebe/k sobě (nebo kolečko myši) zúží/rozšíří zobrazený úsek dat;
+// osa X se vždy přepočítá jen pro aktuálně vybraný rozsah bodů.
+const _zoomCfg={};   // zid -> {type,fullData,keys,colors,H,unit,labels,maxPoints}
+const _zoomState={}; // zid -> {start,end} indexy do fullData
+
+function decimate(arr,maxPoints){
+  if(arr.length<=maxPoints)return arr;
+  const k=Math.ceil(arr.length/maxPoints);
+  return arr.filter((_,i)=>i%k===0);
+}
+function fmtRangeLabel(cfg,start,end){
+  const n=end-start+1,full=cfg.fullData.length;
+  if(n>=full)return `Celé období · ${full} bodů`;
+  const a=cfg.fullData[start]?.label||"",b=cfg.fullData[end]?.label||"";
+  return `${a} – ${b} · ${n} bodů`;
+}
+function renderZoomChart(zid){
+  const cfg=_zoomCfg[zid],st=_zoomState[zid];
+  const shown=decimate(cfg.fullData.slice(st.start,st.end+1),cfg.maxPoints);
+  const svg=svgLine(shown,cfg.keys,cfg.colors,cfg.H,cfg.unit,cfg.labels);
+  const el=document.getElementById("zc-"+zid);if(el)el.innerHTML=svg;
+  const rl=document.getElementById("zr-"+zid);if(rl)rl.textContent=fmtRangeLabel(cfg,st.start,st.end);
+}
+function zoomWrapLine(fullData,keys,colors,H,unit,labels,zid,maxPoints=90){
+  _zoomCfg[zid]={type:"line",fullData,keys,colors,H,unit,labels,maxPoints};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  const st=_zoomState[zid];
+  const svg=svgLine(decimate(fullData.slice(st.start,st.end+1),maxPoints),keys,colors,H,unit,labels);
   return `<div class="chart-zoom" data-zid="${zid}">
-    <div class="chart-zoom-inner" id="zi-${zid}">${svgHtml}</div>
+    <div id="zc-${zid}">${svg}</div>
     <div class="zoom-ctrl">
-      <button class="zoom-btn" onclick="zoomBtn('${zid}',1.4)">+</button>
-      <button class="zoom-btn" onclick="zoomBtn('${zid}',${(1/1.4).toFixed(4)})">−</button>
-      <button class="zoom-btn" onclick="zoomResetBtn('${zid}')" style="font-size:11px">⟲</button>
+      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
     </div>
+    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
   </div>`;
 }
-function applyZoom(zid){
-  const st=_zoomState[zid],el=document.getElementById("zi-"+zid);
-  if(el)el.style.transform=`translate(${st.tx}px,${st.ty}px) scale(${st.scale})`;
+function setWindowRaw(zid,start,end){
+  const cfg=_zoomCfg[zid],N=cfg.fullData.length;
+  let L=Math.max(3,Math.min(N-1,end-start));
+  let s=start,e=start+L;
+  if(s<0){e-=s;s=0;}
+  if(e>N-1){s-=(e-(N-1));e=N-1;}
+  s=Math.max(0,Math.round(s));e=Math.min(N-1,Math.round(e));
+  if(e<=s)e=Math.min(N-1,s+3);
+  _zoomState[zid]={start:s,end:e};
+  renderZoomChart(zid);
 }
-function zoomAt(zid,factor,cx,cy){
-  const st=_zoomState[zid];if(!st)return;
-  const ns=Math.max(1,Math.min(4,st.scale*factor));
-  const f=ns/(st.scale||1);
-  st.tx=cx-(cx-st.tx)*f;
-  st.ty=cy-(cy-st.ty)*f;
-  st.scale=ns;
-  if(st.scale===1){st.tx=0;st.ty=0;}
-  applyZoom(zid);
+function zoomStep(zid,factor){
+  const st=_zoomState[zid],mid=(st.start+st.end)/2,L=(st.end-st.start)*factor;
+  setWindowRaw(zid,mid-L/2,mid+L/2);
 }
-function zoomBtn(zid,factor){
-  const box=document.querySelector(`.chart-zoom[data-zid="${zid}"]`);
-  const r=box?box.getBoundingClientRect():null;
-  zoomAt(zid,factor,r?r.width/2:0,r?r.height/2:0);
+function zoomResetRange(zid){
+  const cfg=_zoomCfg[zid];
+  _zoomState[zid]={start:0,end:cfg.fullData.length-1};
+  renderZoomChart(zid);
 }
-function zoomResetBtn(zid){_zoomState[zid]={scale:1,tx:0,ty:0};applyZoom(zid);}
+function clientXToFrac(zid,clientX){
+  const svgEl=document.querySelector(`#zc-${zid} svg`);
+  if(!svgEl)return 0.5;
+  const rect=svgEl.getBoundingClientRect();
+  const p=CHART_PAD,W=CHART_W;
+  const relX=(clientX-rect.left)/rect.width*W;
+  return Math.max(0,Math.min(1,(relX-p.l)/(W-p.l-p.r)));
+}
+function screenXToIndex(zid,clientX){
+  const st=_zoomState[zid];
+  return st.start+clientXToFrac(zid,clientX)*(st.end-st.start);
+}
 function initChartZoom(){
   document.querySelectorAll(".chart-zoom").forEach(box=>{
     if(box._zoomInit)return;box._zoomInit=true;
     const zid=box.dataset.zid;
-    if(!_zoomState[zid])_zoomState[zid]={scale:1,tx:0,ty:0};
-    applyZoom(zid);
-    const pts={};let lastDist=0,dragging=false,lastX=0,lastY=0;
+    const pts={};let pinch=null,pan=null;
     box.addEventListener("pointerdown",e=>{
       pts[e.pointerId]={x:e.clientX,y:e.clientY};
       const ids=Object.keys(pts);
       if(ids.length===2){
+        pan=null;
         ids.forEach(id=>{try{box.setPointerCapture(Number(id));}catch(err){}});
-        dragging=false;
         const p2=ids.map(id=>pts[id]);
-        lastDist=Math.hypot(p2[0].x-p2[1].x,p2[0].y-p2[1].y);
-      }else if(ids.length===1&&_zoomState[zid].scale>1){
-        try{box.setPointerCapture(e.pointerId);}catch(err){}
-        dragging=true;lastX=e.clientX;lastY=e.clientY;
+        pinch={ia:screenXToIndex(zid,p2[0].x),ib:screenXToIndex(zid,p2[1].x)};
+      }else if(ids.length===1){
+        const st=_zoomState[zid],cfg=_zoomCfg[zid];
+        if(st.end-st.start<cfg.fullData.length-1){
+          try{box.setPointerCapture(e.pointerId);}catch(err){}
+          pan={startAt:st.start,endAt:st.end,lastX:e.clientX};
+        }
       }
     });
     box.addEventListener("pointermove",e=>{
       if(!pts[e.pointerId])return;
       pts[e.pointerId]={x:e.clientX,y:e.clientY};
       const ids=Object.keys(pts);
-      const rect=box.getBoundingClientRect();
-      if(ids.length===2){
+      if(ids.length===2&&pinch){
         const p2=ids.map(id=>pts[id]);
-        const dist=Math.hypot(p2[0].x-p2[1].x,p2[0].y-p2[1].y);
-        const mid={x:(p2[0].x+p2[1].x)/2-rect.left,y:(p2[0].y+p2[1].y)/2-rect.top};
-        if(lastDist>0)zoomAt(zid,dist/lastDist,mid.x,mid.y);
-        lastDist=dist;
-      }else if(ids.length===1&&dragging){
-        const st=_zoomState[zid];
-        if(st.scale>1){st.tx+=e.clientX-lastX;st.ty+=e.clientY-lastY;applyZoom(zid);}
-        lastX=e.clientX;lastY=e.clientY;
+        const fracA=clientXToFrac(zid,p2[0].x),fracB=clientXToFrac(zid,p2[1].x);
+        if(Math.abs(fracA-fracB)>0.02){
+          const L=(pinch.ia-pinch.ib)/(fracA-fracB);
+          const newStart=pinch.ia-fracA*L;
+          setWindowRaw(zid,newStart,newStart+L);
+        }
+      }else if(ids.length===1&&pan){
+        const svgEl=document.querySelector(`#zc-${zid} svg`);
+        const rect=svgEl?svgEl.getBoundingClientRect():box.getBoundingClientRect();
+        const p=CHART_PAD,W=CHART_W;
+        const plotFracW=(W-p.l-p.r)/W;
+        const L=pan.endAt-pan.startAt;
+        const dx=e.clientX-pan.lastX;
+        const idxDelta=-(dx/rect.width)*(L/plotFracW);
+        setWindowRaw(zid,pan.startAt+idxDelta,pan.endAt+idxDelta);
       }
     });
-    const endPtr=e=>{delete pts[e.pointerId];const ids=Object.keys(pts);
-      lastDist=0;
-      if(ids.length===1){dragging=true;lastX=pts[ids[0]].x;lastY=pts[ids[0]].y;}
-      else dragging=false;
+    const endPtr=e=>{
+      delete pts[e.pointerId];
+      const ids=Object.keys(pts);
+      pinch=null;
+      if(ids.length===1){
+        const st=_zoomState[zid],cfg=_zoomCfg[zid];
+        pan=(st.end-st.start<cfg.fullData.length-1)?{startAt:st.start,endAt:st.end,lastX:pts[ids[0]].x}:null;
+      }else pan=null;
     };
     box.addEventListener("pointerup",endPtr);
     box.addEventListener("pointercancel",endPtr);
     box.addEventListener("pointerleave",e=>{if(Object.keys(pts).length<2)endPtr(e);});
     box.addEventListener("wheel",e=>{
       e.preventDefault();
-      const rect=box.getBoundingClientRect();
-      zoomAt(zid,e.deltaY<0?1.15:1/1.15,e.clientX-rect.left,e.clientY-rect.top);
+      const st=_zoomState[zid];
+      const anchorIdx=screenXToIndex(zid,e.clientX);
+      const frac=clientXToFrac(zid,e.clientX);
+      const factor=e.deltaY<0?0.8:1.25;
+      const L=(st.end-st.start)*factor;
+      const newStart=anchorIdx-frac*L;
+      setWindowRaw(zid,newStart,newStart+L);
     },{passive:false});
   });
 }
@@ -535,7 +589,6 @@ function showTab(tab){
 // ── FORMA ─────────────────────────────────────────────────────────────────────
 function renderForma(){
   if(!FITNESS.length)return noData();
-  const s=FITNESS.filter((_,i)=>i%Math.max(1,Math.floor(FITNESS.length/80))===0);
   const tsb=LATEST.tsb,tc=tsb>5?"#34d399":tsb>-10?"#fbbf24":"#ef4444";
   const tl=tsb>5?"Svěží":tsb>-10?"Neutrální":"Unavený";
   const tm=tsb<-10?"⚠️ Přidej regeneraci.":tsb>10?"✅ Ideální na intenzitu.":"→ Trénuj opatrně.";
@@ -543,13 +596,13 @@ function renderForma(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">CTL / ATL — Forma & Únava</div><div class="card-sub">Modrá = základ 42d · Oranžová = únava 7d</div></div>${infoBtn("ctl")}</div>
     ${infoBox("ctl")}
-    ${zoomWrap(svgLine(s,["ctl","atl"],["#38bdf8","#fb923c"],160,"",["Forma (CTL)","Únava (ATL)"]),"forma-ctl")}
+    ${zoomWrapLine(FITNESS,["ctl","atl"],["#38bdf8","#fb923c"],160,"",["Forma (CTL)","Únava (ATL)"],"forma-ctl")}
     <div style="display:flex;gap:16px;margin-top:4px"><span style="font-size:11px;color:#38bdf8">● CTL Forma</span><span style="font-size:11px;color:#fb923c">● ATL Únava</span></div>
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">TSB — Svěžest</div><div class="card-sub"><span style="color:#34d399">Zelená >5</span>: svěží · <span style="color:#fbbf24">Žlutá</span>: neutrální · <span style="color:#ef4444">&lt;-10</span>: unavený</div></div>${infoBtn("tsb")}</div>
     ${infoBox("tsb")}
-    ${zoomWrap(svgLine(s,["tsb"],["#a78bfa"],140,"",["TSB"]),"forma-tsb")}
+    ${zoomWrapLine(FITNESS,["tsb"],["#a78bfa"],140,"",["TSB"],"forma-tsb")}
     <div class="alert" style="background:#0f172a;border:1px solid #334155;margin-top:8px">
       <span style="color:${tc};font-weight:700">TSB: ${tsb} — ${tl}</span>
       <span style="color:#64748b;margin-left:8px">${tm}</span>
@@ -672,7 +725,7 @@ function removeAIRide(id){aiRideCtx=aiRideCtx.filter(r=>r.id!==id);const el=docu
 // ── TF ────────────────────────────────────────────────────────────────────────
 function renderTF(){
   if(!RIDES.length)return noData();
-  const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80).slice(0,40).reverse()
+  const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80).slice().reverse()
     .map(r=>({label:r.date.slice(5),ratio:+(r.watts/r.hr).toFixed(2)}));
   const weekVol={};
   RIDES.forEach(r=>{const d=new Date(r.date);d.setDate(d.getDate()-d.getDay());const wk=d.toISOString().slice(0,10);weekVol[wk]=(weekVol[wk]||0)+Math.round(r.dur/3600*10)/10;});
@@ -684,7 +737,7 @@ function renderTF(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">Poměr W/bpm</div><div class="card-sub">Aerobní efektivita · trend ↑ = lepší kondice</div></div>${infoBtn("ratio")}</div>
     ${infoBox("ratio")}
-    ${zoomWrap(svgLine(hrData,["ratio"],["#34d399"],150,"%",["Efektivita"]),"tf-ratio")}
+    ${zoomWrapLine(hrData,["ratio"],["#34d399"],150,"%",["Efektivita"],"tf-ratio")}
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">Týdenní objem (hod)</div><div class="card-sub">Posledních 16 týdnů</div></div>${infoBtn("volume")}</div>
