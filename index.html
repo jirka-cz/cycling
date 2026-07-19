@@ -943,11 +943,13 @@ async function syncToCloud(){
   if(!S.workerUrl)return;
   const ts=Date.now();
   try{
-    await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,ts}})});
+    const raw=await res.text();
+    if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
     localStorage.setItem("cyc_ai_ts",String(ts));
-    setSyncBadge("✅ Sync OK · "+new Date(ts).toLocaleTimeString("cs-CZ"));
-  }catch(e){setSyncBadge("⚠️ Sync selhal (Worker zatím sync nepodporuje?)");}
+    setSyncBadge("✅ Sync OK (uloženo) · "+new Date(ts).toLocaleTimeString("cs-CZ"));
+  }catch(e){setSyncBadge("⚠️ Chyba při ukládání: "+e.message);}
 }
 
 async function syncFromCloud(silent){
@@ -955,9 +957,12 @@ async function syncFromCloud(silent){
   try{
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({action:"kv_get",key:"coach_sync"})});
-    const data=await res.json();
+    const raw=await res.text();
+    if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
+    let data;
+    try{data=JSON.parse(raw);}catch(pe){throw new Error("Worker nevrátil JSON: "+raw.slice(0,150));}
     const remote=data&&data.value;
-    if(!remote)return;
+    if(!remote){if(!silent)setSyncBadge("☁️ Worker OK, ale zatím nic uloženo (zkus nejdřív uložit plán/nastavení)");return;}
     const localTs=Number(localStorage.getItem("cyc_ai_ts")||0);
     if((remote.ts||0)>localTs){
       if(remote.aiHistory){aiHistory=remote.aiHistory;localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));}
@@ -967,7 +972,7 @@ async function syncFromCloud(silent){
       if(currentTab==="ai"||currentTab==="admin")showTab(currentTab);
     }
     if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
-  }catch(e){if(!silent)setSyncBadge("⚠️ Sync selhal (Worker zatím sync nepodporuje?)");}
+  }catch(e){if(!silent)setSyncBadge("⚠️ Chyba při stahování: "+e.message);}
 }
 function setSyncBadge(txt){const el=document.getElementById("sync-badge");if(el)el.textContent=txt;}
 
