@@ -62,9 +62,13 @@ textarea{resize:vertical}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;display:flex;align-items:flex-end}
 .modal{background:#1e293b;border-radius:16px 16px 0 0;padding:20px;width:100%;max-height:80vh;overflow-y:auto;border-top:1px solid #334155}
 .modal-close{float:right;background:none;border:none;color:#64748b;font-size:20px;cursor:pointer}
+#chart-tooltip{position:fixed;display:none;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:7px 10px;font-size:11px;line-height:1.5;color:#e2e8f0;pointer-events:none;z-index:999;box-shadow:0 6px 16px rgba(0,0,0,.5);white-space:nowrap}
+#chart-tooltip b{font-weight:800}
+svg[data-cid]{touch-action:none;cursor:crosshair}
 </style>
 </head>
 <body>
+<div id="chart-tooltip"></div>
 <div id="app">
   <div class="header">
     <div style="display:flex;align-items:center;gap:8px">
@@ -313,14 +317,20 @@ function updateHeader(){
 }
 
 // ── SVG CHARTS ────────────────────────────────────────────────────────────────
-function svgLine(data,keys,colors,H=160){
-  const W=340,p={t:10,r:8,b:26,l:32};
+const CHART_W=340,CHART_PAD={t:10,r:8,b:26,l:32};
+let _chartMeta={},_chartId=0;
+const CHART_EVTS='onpointerdown="chartTip(event)" onpointermove="chartTip(event)" onpointerup="chartTip(event)" onpointerleave="hideTip()"';
+
+function svgLine(data,keys,colors,H=160,unit="",labels=null){
+  const id="c"+(_chartId++);
+  _chartMeta[id]={type:"line",data,keys,colors,unit:unit||"",labels:labels||keys};
+  const W=CHART_W,p=CHART_PAD;
   const cw=W-p.l-p.r,ch=H-p.t-p.b;
   const vals=data.flatMap(d=>keys.map(k=>d[k]||0));
   const minV=Math.min(...vals)-3,maxV=Math.max(...vals)+3;
   const px=i=>p.l+i/(data.length-1||1)*cw;
   const py=v=>p.t+ch-(v-minV)/(maxV-minV||1)*ch;
-  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px" data-cid="${id}" ${CHART_EVTS}>`;
   for(let i=0;i<=3;i++){const y=p.t+i*ch/3;const v=Math.round(maxV-(maxV-minV)*i/3);
     s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
     s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`;}
@@ -332,13 +342,15 @@ function svgLine(data,keys,colors,H=160){
   return s+`</svg>`;
 }
 
-function svgBar(data,key,color,H=150,refVal=null){
-  const W=340,p={t:10,r:8,b:26,l:32};
+function svgBar(data,key,color,H=150,refVal=null,unit="",label="FTP"){
+  const id="c"+(_chartId++);
+  _chartMeta[id]={type:"bar",data,key,color,unit:unit||"",refVal,refLabel:label};
+  const W=CHART_W,p=CHART_PAD;
   const cw=W-p.l-p.r,ch=H-p.t-p.b;
   const vals=data.map(d=>d[key]||0);
   const maxV=Math.max(...vals)*1.1||1;
   const bw=Math.max(6,cw/data.length-2);
-  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px" data-cid="${id}" ${CHART_EVTS}>`;
   for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
     s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${Math.round(maxV-maxV*i/3)}</text>`;}
   data.forEach((d,i)=>{
@@ -351,6 +363,47 @@ function svgBar(data,key,color,H=150,refVal=null){
     s+=`<text x="${W-p.r}" y="${y-3}" text-anchor="end" fill="#a78bfa" font-size="9">FTP</text>`;}
   return s+`</svg>`;
 }
+
+// ── CHART TOOLTIP (hover na PC / dotyk na mobilu) ──────────────────────────────
+function chartTip(e){
+  const svg=e.currentTarget;
+  const meta=_chartMeta[svg.dataset.cid];
+  if(!meta)return;
+  if(e.pointerType==='mouse' && e.buttons===0 && e.type==='pointerdown')return;
+  e.preventDefault();
+  const rect=svg.getBoundingClientRect();
+  const relX=(e.clientX-rect.left)/rect.width*CHART_W;
+  const cw=CHART_W-CHART_PAD.l-CHART_PAD.r;
+  let idx;
+  if(meta.type==='line'){
+    idx=Math.round((relX-CHART_PAD.l)/cw*(meta.data.length-1));
+  }else{
+    idx=Math.floor((relX-CHART_PAD.l)/(cw/meta.data.length));
+  }
+  idx=Math.max(0,Math.min(meta.data.length-1,idx));
+  const d=meta.data[idx];
+  let html;
+  if(meta.type==='line'){
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||''}</div>`+
+      meta.keys.map((k,i)=>`<div><span style="color:${meta.colors[i]}">●</span> ${(meta.labels[i]||k).toUpperCase()}: <b>${d[k]??0}</b>${meta.unit}</div>`).join('');
+  }else{
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||d.d||''}</div><div><span style="color:${meta.color}">●</span> <b>${d[meta.key]??0}</b>${meta.unit}</div>`+
+      (meta.refVal?`<div style="color:#a78bfa">${meta.refLabel}: <b>${meta.refVal}</b>${meta.unit}</div>`:'');
+  }
+  const tip=document.getElementById('chart-tooltip');
+  tip.innerHTML=html;
+  tip.style.display='block';
+  const tw=tip.offsetWidth||120,th=tip.offsetHeight||40;
+  let left=e.clientX+14,top=e.clientY-th-14;
+  if(left+tw>window.innerWidth-8)left=e.clientX-tw-14;
+  if(left<8)left=8;
+  if(top<8)top=e.clientY+14;
+  if(top+th>window.innerHeight-8)top=window.innerHeight-th-8;
+  tip.style.left=left+'px';
+  tip.style.top=top+'px';
+}
+function hideTip(){const tip=document.getElementById('chart-tooltip');if(tip)tip.style.display='none';}
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('svg[data-cid]'))hideTip();});
 
 function infoBtn(key){return `<button class="info-btn" onclick="toggleInfo('${key}')">i</button>`;}
 function infoBox(key){return `<div class="info-box" id="info-${key}">${INFO[key]||""}</div>`;}
@@ -389,13 +442,13 @@ function renderForma(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">CTL / ATL — Forma & Únava</div><div class="card-sub">Modrá = základ 42d · Oranžová = únava 7d</div></div>${infoBtn("ctl")}</div>
     ${infoBox("ctl")}
-    ${svgLine(s,["ctl","atl"],["#38bdf8","#fb923c"])}
+    ${svgLine(s,["ctl","atl"],["#38bdf8","#fb923c"],160,"",["Forma (CTL)","Únava (ATL)"])}
     <div style="display:flex;gap:16px;margin-top:4px"><span style="font-size:11px;color:#38bdf8">● CTL Forma</span><span style="font-size:11px;color:#fb923c">● ATL Únava</span></div>
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">TSB — Svěžest</div><div class="card-sub"><span style="color:#34d399">Zelená >5</span>: svěží · <span style="color:#fbbf24">Žlutá</span>: neutrální · <span style="color:#ef4444">&lt;-10</span>: unavený</div></div>${infoBtn("tsb")}</div>
     ${infoBox("tsb")}
-    ${svgLine(s,["tsb"],["#a78bfa"],140)}
+    ${svgLine(s,["tsb"],["#a78bfa"],140,"",["TSB"])}
     <div class="alert" style="background:#0f172a;border:1px solid #334155;margin-top:8px">
       <span style="color:${tc};font-weight:700">TSB: ${tsb} — ${tl}</span>
       <span style="color:#64748b;margin-left:8px">${tm}</span>
@@ -424,7 +477,7 @@ function renderPower(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">Power Curve</div><div class="card-sub">Odhad z nejlepšího výkonu jízd · FTP ${ftp}W</div></div>${infoBtn("power")}</div>
     ${infoBox("power")}
-    ${svgBar(pcData,"w","#38bdf8",160,ftp)}
+    ${svgBar(pcData,"w","#38bdf8",160,ftp,"W")}
   </div>
   <div class="card">
     <div class="card-header"><div class="card-title">Výkonnostní zóny · FTP ${ftp}W</div>${infoBtn("zones")}</div>
@@ -530,12 +583,12 @@ function renderTF(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">Poměr W/bpm</div><div class="card-sub">Aerobní efektivita · trend ↑ = lepší kondice</div></div>${infoBtn("ratio")}</div>
     ${infoBox("ratio")}
-    ${svgLine(hrData,["ratio"],["#34d399"],150)}
+    ${svgLine(hrData,["ratio"],["#34d399"],150,"%",["Efektivita"])}
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">Týdenní objem (hod)</div><div class="card-sub">Posledních 16 týdnů</div></div>${infoBtn("volume")}</div>
     ${infoBox("volume")}
-    ${svgBar(wkData,"h","#38bdf8",150)}
+    ${svgBar(wkData,"h","#38bdf8",150,null,"h","")}
   </div>
   <div class="card">
     <div class="grid2">
@@ -830,6 +883,7 @@ async function askCoach(){
     const entry={q:"📅 Denní plán trenéra",a:ans,ts:new Date().toLocaleTimeString("cs-CZ"),type:"coach"};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
+    syncToCloud();
     if(rb)rb.innerHTML=`<div style="background:#0a1628;border:1px solid #1e40af;border-radius:10px;padding:16px;margin-top:12px">
       <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-4-6</div>
       <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${ans}</div>
@@ -868,6 +922,7 @@ async function askAI(){
     const entry={q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
+    syncToCloud();
     const rb=document.getElementById("ai-response");
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${ans}</div></div>`;
   }catch(e){
@@ -879,7 +934,42 @@ async function askAI(){
 }
 
 function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${aiHistory[i].a}</div></div>`;}
-function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");showTab("ai");}
+function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");syncToCloud();showTab("ai");}
+
+// ── CLOUD SYNC (sdílení AI historie a nastavení mezi zařízeními) ───────────────
+// Vyžaduje rozšířený Cloudflare Worker s KV úložištěm (viz worker.js šablona).
+// Pokud Worker sync ještě nepodporuje, volání jen tiše selže – appka funguje dál jen lokálně.
+async function syncToCloud(){
+  if(!S.workerUrl)return;
+  const ts=Date.now();
+  try{
+    await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,ts}})});
+    localStorage.setItem("cyc_ai_ts",String(ts));
+    setSyncBadge("✅ Sync OK · "+new Date(ts).toLocaleTimeString("cs-CZ"));
+  }catch(e){setSyncBadge("⚠️ Sync selhal (Worker zatím sync nepodporuje?)");}
+}
+
+async function syncFromCloud(silent){
+  if(!S.workerUrl)return;
+  try{
+    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"kv_get",key:"coach_sync"})});
+    const data=await res.json();
+    const remote=data&&data.value;
+    if(!remote)return;
+    const localTs=Number(localStorage.getItem("cyc_ai_ts")||0);
+    if((remote.ts||0)>localTs){
+      if(remote.aiHistory){aiHistory=remote.aiHistory;localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));}
+      if(remote.settings){S={...S,...remote.settings,workerUrl:S.workerUrl};localStorage.setItem("cyc_s",JSON.stringify(S));}
+      localStorage.setItem("cyc_ai_ts",String(remote.ts));
+      recompute();updateHeader();
+      if(currentTab==="ai"||currentTab==="admin")showTab(currentTab);
+    }
+    if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
+  }catch(e){if(!silent)setSyncBadge("⚠️ Sync selhal (Worker zatím sync nepodporuje?)");}
+}
+function setSyncBadge(txt){const el=document.getElementById("sync-badge");if(el)el.textContent=txt;}
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 function renderAdmin(){
@@ -910,6 +1000,10 @@ function renderAdmin(){
     <div class="field-label">Worker URL</div>
     <input id="worker-url" placeholder="https://xxx.workers.dev" value="${S.workerUrl||""}">
     <button class="btn" onclick="saveWorker()" style="background:#1e40af;margin-top:8px;width:100%">💾 Uložit Worker URL</button>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 10px">
+      <span style="font-size:11px;color:#64748b;flex:1" id="sync-badge">☁️ Sync mezi zařízeními zatím neproveden</span>
+      <button onclick="syncFromCloud()" style="background:#334155;color:#e2e8f0;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer">🔄 Sync teď</button>
+    </div>
     <div style="background:#0f172a;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#94a3b8;line-height:1.6">
       <strong style="color:#38bdf8">Jak nastavit Cloudflare Worker:</strong><br>
       1. Jdi na <strong>workers.cloudflare.com</strong> → přihlas se zdarma<br>
@@ -961,6 +1055,7 @@ function saveSettings(){
   if(gv("s-notes")!==null) S.notes=gv("s-notes");
   if(gv("s-prompt")!==null) S.sysPrompt=gv("s-prompt")||S.sysPrompt;
   localStorage.setItem("cyc_s",JSON.stringify(S));
+  syncToCloud();
   recompute();updateHeader();
   const btn=document.getElementById("save-btn");
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
@@ -971,6 +1066,7 @@ const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
 handleOAuth().then(was=>{if(!was)showTab("forma");});
+syncFromCloud(true);
 </script>
 </body>
 </html>
