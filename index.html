@@ -668,7 +668,9 @@ function renderPlanOutput(text) {
   let html='<div style="margin-top:4px">';
   lines.forEach(line=>{
     const headingMatch=line.match(/^\*\*(.+?)\*\*:?\s*$/);
-    const bulletMatch=line.match(/^[*\-]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const dayMatch=line.match(/^\d+[\.\)]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const boldBulletMatch=line.match(/^[*\-]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const plainBulletMatch=line.match(/^[*\-]\s+(.*)$/);
     if(headingMatch){
       const title=headingMatch[1].replace(/:$/,"");
       const low=title.toLowerCase();
@@ -678,13 +680,16 @@ function renderPlanOutput(text) {
       else if(low.includes("pozor")||low.includes("varov")||low.includes("riziko")){icon="⚠️";color="#ef4444";}
       else if(low.includes("priorit")||low.includes("cíl")){icon="🎯";color="#fbbf24";}
       html+=`<div style="display:flex;align-items:center;gap:6px;margin:16px 0 8px;font-size:12px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.3px">${icon} ${title}</div>`;
-    } else if(bulletMatch){
-      const label=bulletMatch[1];
-      const rest=mdBold(bulletMatch[2]);
-      html+=`<div style="background:#0f172a;border:1px solid #1e293b;border-left:3px solid #38bdf8;border-radius:0 8px 8px 0;padding:9px 12px;margin-bottom:6px">
-        <div style="font-size:11px;font-weight:700;color:#38bdf8;margin-bottom:3px">${label}</div>
+    } else if(dayMatch || boldBulletMatch){
+      const m=dayMatch||boldBulletMatch;
+      const label=m[1];
+      const rest=mdBold(m[2]);
+      html+=`<div style="background:#0f172a;border:1px solid #1e293b;border-left:3px solid #38bdf8;border-radius:0 10px 10px 0;padding:10px 12px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:#38bdf8;margin-bottom:4px">📌 ${label}</div>
         <div style="font-size:12px;color:#cbd5e1;line-height:1.6">${rest}</div>
       </div>`;
+    } else if(plainBulletMatch){
+      html+=`<div style="display:flex;gap:8px;font-size:12px;color:#e2e8f0;line-height:1.6;padding:2px 0 2px 4px"><span style="color:#64748b">•</span><span>${mdBold(plainBulletMatch[1])}</span></div>`;
     } else {
       html+=`<div style="font-size:12px;color:#e2e8f0;line-height:1.7;padding:2px 0">${mdBold(line)}</div>`;
     }
