@@ -315,6 +315,8 @@ async function updatePowerCurve(limit){
   const statusEl=()=>document.getElementById("pc-status");
   const token=await getToken();
   if(!token){_pcRunning=false;alert("Nejdřív se přihlas přes Strava v záložce Admin.");return;}
+  // nejdřív stáhni, co už spočítalo jiné zařízení, ať tu práci neděláme znovu
+  if(S.workerUrl){const el=statusEl();if(el)el.textContent="☁️ Kontroluji, co už je spočtené jinde…";await syncFromCloud(true);}
   const cache=pcCache();
   const todo=RIDES.filter(r=>r.watts>0&&!cache[r.id]).slice(0,limit||20);
   let done=0,rateLimited=false;
@@ -327,6 +329,8 @@ async function updatePowerCurve(limit){
       const el=statusEl();if(el)el.textContent=`Zpracovávám power curve… ${done}/${todo.length}`;
     }catch(e){if(e&&e.rateLimited){rateLimited=true;break;}}
   }
+  // ulož spočtené i jen částečně dokončené do cloudu, ať to na dalším zařízení nemusíš počítat znovu
+  if(S.workerUrl)await syncToCloud();
   _pcRunning=false;
   if(currentTab==="power")showTab("power");
   if(rateLimited)alert("Strava API dočasně omezilo počet požadavků. Zkus 'Načíst další jízdy' za pár minut.");
@@ -1193,15 +1197,33 @@ async function askAI(){
 function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${mdBold(aiHistory[i].a)}</div></div>`;}
 function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");syncToCloud();showTab("ai");}
 
-// ── CLOUD SYNC (sdílení AI historie a nastavení mezi zařízeními) ───────────────
+// ── CLOUD SYNC (sdílení AI historie, nastavení a POWER CURVE cache mezi zařízeními) ──
 // Vyžaduje rozšířený Cloudflare Worker s KV úložištěm (viz worker.js šablona).
 // Pokud Worker sync ještě nepodporuje, volání jen tiše selže – appka funguje dál jen lokálně.
+// Power-curve cache se SLUČUJE (union podle activity id), ne přepisuje – takže když
+// spočítáš část jízd na PC a část na mobilu, obě sady se spojí a nic se neztratí.
+function mergeRemotePcCache(remotePc){
+  if(!remotePc)return false;
+  const local=pcCache();
+  let changed=false;
+  Object.keys(remotePc).forEach(id=>{if(!local[id]){local[id]=remotePc[id];changed=true;}});
+  if(changed)savePcCache(local);
+  return changed;
+}
 async function syncToCloud(){
   if(!S.workerUrl)return;
   const ts=Date.now();
   try{
+    // nejdřív stáhni aktuální cloud stav a slouč power-curve cache, ať nepřepíšeme
+    // data spočtená mezitím na jiném zařízení
+    try{
+      const getRes=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"kv_get",key:"coach_sync"})});
+      const getData=await getRes.json().catch(()=>null);
+      if(getData&&getData.value&&getData.value.pcCache)mergeRemotePcCache(getData.value.pcCache);
+    }catch(e){}
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,ts}})});
+      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,pcCache:pcCache(),ts}})});
     const raw=await res.text();
     if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
     localStorage.setItem("cyc_ai_ts",String(ts));
@@ -1220,6 +1242,8 @@ async function syncFromCloud(silent){
     try{data=JSON.parse(raw);}catch(pe){throw new Error("Worker nevrátil JSON: "+raw.slice(0,150));}
     const remote=data&&data.value;
     if(!remote){if(!silent)setSyncBadge("☁️ Worker OK, ale zatím nic uloženo (zkus nejdřív uložit plán/nastavení)");return;}
+    // power-curve cache slučujeme vždy, bez ohledu na timestamp – je to čistě přírůstková data
+    const pcChanged=mergeRemotePcCache(remote.pcCache);
     const localTs=Number(localStorage.getItem("cyc_ai_ts")||0);
     if((remote.ts||0)>localTs){
       if(remote.aiHistory){aiHistory=remote.aiHistory;localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));}
@@ -1229,6 +1253,7 @@ async function syncFromCloud(silent){
       recompute();updateHeader();
       if(currentTab==="ai"||currentTab==="admin"||currentTab==="plan")showTab(currentTab);
     }
+    if(pcChanged&&currentTab==="power")showTab("power");
     if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
   }catch(e){if(!silent)setSyncBadge("⚠️ Chyba při stahování: "+e.message);}
 }
