@@ -115,7 +115,7 @@ let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
 let FITNESS=[], LATEST={ctl:0,atl:0,tsb:0};
 let currentTab="forma", selRide=null, aiLoading=false, planLoading=false;
 let aiRideCtx=[];
-let planCache=null;
+let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
 
 // ── INFO TEXTS ────────────────────────────────────────────────────────────────
 const INFO = {
@@ -656,21 +656,37 @@ function renderPlan() {
   </div>`;
 }
 
+function cleanAIText(text){
+  // levný model občas vyplivne náhodný cizí znak (CJK) uprostřed české věty – ořízneme
+  return String(text).replace(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g,"").replace(/\r/g,"");
+}
+function mdBold(line){return line.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>");}
+
 function renderPlanOutput(text) {
-  // Parse sections and style them
-  const lines = text.split("\n");
-  let html = '<div style="margin-top:4px">';
-  lines.forEach(line => {
-    if(line.startsWith("1.") || line.startsWith("📊")) {
-      html+=`<div style="background:#0c1929;border-left:3px solid #38bdf8;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#38bdf8;margin-bottom:4px">📊 AKTUÁLNÍ STAV</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^1\.\s*📊.*?:\s*/,"").replace(/^📊\s*AKTUÁLNÍ STAV.*?:\s*/,"")}</div></div>`;
-    } else if(line.startsWith("2.") || line.startsWith("📅")) {
-      html+=`<div style="background:#0a1f0a;border-left:3px solid #34d399;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#34d399;margin-bottom:4px">📅 PLÁN NA 7 DNÍ</div>`;
-    } else if(line.startsWith("3.") || line.startsWith("🎯")) {
-      html+=`</div><div style="background:#1a0f00;border-left:3px solid #fbbf24;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#fbbf24;margin-bottom:4px">🎯 PRIORITA TÝDNE</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^3\.\s*🎯.*?:\s*/,"").replace(/^🎯\s*PRIORITA.*?:\s*/,"")}</div></div>`;
-    } else if(line.startsWith("4.") || line.startsWith("⚠️")) {
-      html+=`<div style="background:#1a0808;border-left:3px solid #ef4444;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#ef4444;margin-bottom:4px">⚠️ POZOR</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^4\.\s*⚠️.*?:\s*/,"").replace(/^⚠️\s*NA CO.*?:\s*/,"")}</div></div>`;
-    } else if(line.trim()) {
-      html+=`<div style="font-size:12px;color:#e2e8f0;line-height:1.7;padding:1px 0">${line}</div>`;
+  text=cleanAIText(text);
+  const lines=text.split("\n").map(l=>l.trim()).filter(l=>l.length);
+  let html='<div style="margin-top:4px">';
+  lines.forEach(line=>{
+    const headingMatch=line.match(/^\*\*(.+?)\*\*:?\s*$/);
+    const bulletMatch=line.match(/^[*\-]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    if(headingMatch){
+      const title=headingMatch[1].replace(/:$/,"");
+      const low=title.toLowerCase();
+      let icon="📌",color="#94a3b8";
+      if(low.includes("stav")){icon="📊";color="#38bdf8";}
+      else if(low.includes("doporuč")||low.includes("plán")||low.includes("týden")){icon="📅";color="#34d399";}
+      else if(low.includes("pozor")||low.includes("varov")||low.includes("riziko")){icon="⚠️";color="#ef4444";}
+      else if(low.includes("priorit")||low.includes("cíl")){icon="🎯";color="#fbbf24";}
+      html+=`<div style="display:flex;align-items:center;gap:6px;margin:16px 0 8px;font-size:12px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.3px">${icon} ${title}</div>`;
+    } else if(bulletMatch){
+      const label=bulletMatch[1];
+      const rest=mdBold(bulletMatch[2]);
+      html+=`<div style="background:#0f172a;border:1px solid #1e293b;border-left:3px solid #38bdf8;border-radius:0 8px 8px 0;padding:9px 12px;margin-bottom:6px">
+        <div style="font-size:11px;font-weight:700;color:#38bdf8;margin-bottom:3px">${label}</div>
+        <div style="font-size:12px;color:#cbd5e1;line-height:1.6">${rest}</div>
+      </div>`;
+    } else {
+      html+=`<div style="font-size:12px;color:#e2e8f0;line-height:1.7;padding:2px 0">${mdBold(line)}</div>`;
     }
   });
   html+="</div>";
@@ -717,8 +733,10 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({system:COACH_SYSTEM_PROMPT,messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
-    const ans=data.content?.[0]?.text||"Chyba odpovědi.";
+    const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
     planCache=ans;
+    localStorage.setItem("cyc_plan",JSON.stringify(ans));
+    syncToCloud();
     const out=document.getElementById("plan-output");
     if(out)out.innerHTML=renderPlanOutput(ans);
   }catch(e){
@@ -879,14 +897,14 @@ async function askCoach(){
       body:JSON.stringify({system:COACH_SYSTEM_PROMPT,messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
     });
     const data=await res.json();
-    const ans=data.content?.[0]?.text||JSON.stringify(data);
+    const ans=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
     const entry={q:"📅 Denní plán trenéra",a:ans,ts:new Date().toLocaleTimeString("cs-CZ"),type:"coach"};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
     if(rb)rb.innerHTML=`<div style="background:#0a1628;border:1px solid #1e40af;border-radius:10px;padding:16px;margin-top:12px">
       <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-4-6</div>
-      <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${ans}</div>
+      <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${mdBold(ans)}</div>
     </div>`;
   }catch(e){
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
@@ -918,13 +936,13 @@ async function askAI(){
       body:JSON.stringify({system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
     });
     const data=await res.json();
-    const ans=data.content?.[0]?.text||JSON.stringify(data);
+    const ans=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
     const entry={q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
     const rb=document.getElementById("ai-response");
-    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${ans}</div></div>`;
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${mdBold(ans)}</div></div>`;
   }catch(e){
     const rb=document.getElementById("ai-response");
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
@@ -933,7 +951,7 @@ async function askAI(){
   if(btn){btn.textContent="🤖 Zeptat se AI trenéra";btn.style.background="#1e40af";}
 }
 
-function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${aiHistory[i].a}</div></div>`;}
+function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${mdBold(aiHistory[i].a)}</div></div>`;}
 function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");syncToCloud();showTab("ai");}
 
 // ── CLOUD SYNC (sdílení AI historie a nastavení mezi zařízeními) ───────────────
@@ -944,7 +962,7 @@ async function syncToCloud(){
   const ts=Date.now();
   try{
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,ts}})});
+      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,ts}})});
     const raw=await res.text();
     if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
     localStorage.setItem("cyc_ai_ts",String(ts));
@@ -967,9 +985,10 @@ async function syncFromCloud(silent){
     if((remote.ts||0)>localTs){
       if(remote.aiHistory){aiHistory=remote.aiHistory;localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));}
       if(remote.settings){S={...S,...remote.settings,workerUrl:S.workerUrl};localStorage.setItem("cyc_s",JSON.stringify(S));}
+      if(remote.planCache){planCache=remote.planCache;localStorage.setItem("cyc_plan",JSON.stringify(planCache));}
       localStorage.setItem("cyc_ai_ts",String(remote.ts));
       recompute();updateHeader();
-      if(currentTab==="ai"||currentTab==="admin")showTab(currentTab);
+      if(currentTab==="ai"||currentTab==="admin"||currentTab==="plan")showTab(currentTab);
     }
     if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
   }catch(e){if(!silent)setSyncBadge("⚠️ Chyba při stahování: "+e.message);}
