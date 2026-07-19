@@ -420,6 +420,7 @@ function noData(){return `<div class="card" style="text-align:center;padding:40p
 const TABS=["forma","power","jizdy","tf","plan","ai","admin"];
 function showTab(tab){
   currentTab=tab;
+  localStorage.setItem("cyc_tab",tab);
   TABS.forEach(t=>{const el=document.getElementById("nl-"+t);if(el){el.classList.toggle("active",t===tab);}});
   const c=document.getElementById("content");
   if(tab==="forma")c.innerHTML=renderForma();
@@ -1094,7 +1095,8 @@ const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
-handleOAuth().then(was=>{if(!was)showTab("forma");});
+const savedTab=localStorage.getItem("cyc_tab")||"forma";
+handleOAuth().then(was=>{if(!was)showTab(savedTab);});
 syncFromCloud(true);
 </script>
 </body>
