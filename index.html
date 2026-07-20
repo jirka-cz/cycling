@@ -122,8 +122,12 @@ let S = JSON.parse(localStorage.getItem("cyc_s")||"null") || {
   quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],
   workerUrl:"",
   ftpMode:"auto", // "auto" = FTP se počítá ze Strava dat (reálné), "manual" = simulace s ručně zadaným FTP
+  ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",
+  ftpManualEntries:[],
 };
 if(!S.ftpMode)S.ftpMode="auto";
+if(!S.ftpTestKeywords)S.ftpTestKeywords="ramp,ftp test,ramp test,ftp ramp";
+if(!S.ftpManualEntries)S.ftpManualEntries=[];
 let RIDES = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
 let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
 let FITNESS=[], LATEST={ctl:0,atl:0,tsb:0};
@@ -202,7 +206,7 @@ const INFO = {
     <span class="tag" style="background:#0a2a0a;color:#34d399">3.0–3.5</span> Pokročilý (ty: ${(getCurrentFtp()/S.weight).toFixed(2)})<br>
     <span class="tag" style="background:#2a1500;color:#fbbf24">3.5–4.0</span> Závodník<br>
     <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 4.0</span> Elite<br><br>
-    <strong>Odkud se bere tvoje FTP:</strong> Nezadáváš ho ručně — appka ho automaticky odhaduje z tvých jízd na Strava (z jejich Normalized Power a délky). Jízda s dost dlouhým a tvrdým úsilím (test, ramp test, delší práh/SST blok) může nastavit nové maximum, které pak platí od svého data dál — dokud ho nepřekoná jízda ještě lepší. V Adminu si navíc můžeš pro porovnání zapnout ruční "co by bylo kdyby" simulaci.`,
+    <strong>Odkud se bere tvoje FTP:</strong> Nezadáváš ho paušálně ručně — počítá se jen z jízd, jejichž název odpovídá klíčovým slovům pro FTP test (nastavíš v Adminu, výchozí "ramp", "ftp test"), plus z ručně přidaných záznamů k libovolnému datu (test odjinud, úprava po nemoci apod.). Nejnovější platný záznam k danému dni určuje tehdejší FTP — může jít nahoru i dolů, žádný "jen rostoucí" filtr. Běžné jízdy se do toho nepočítají. V Adminu si navíc můžeš pro porovnání zapnout ruční "co by bylo kdyby" simulaci.`,
 
   rideNP: `<h4>NP — Normalizovaný výkon</h4>
     Není to prostý průměr, ale vážený výkon, který zohledňuje kolísání (klouzavý 30s průměr umocněný na 4. a pak odmocněný). Lépe vyjadřuje skutečnou fyziologickou zátěž jízdy — u přerušovaných/kopcovitých jízd bývá vyšší než průměr, u rovnoměrné jízdy (časovka, Zwift SST) se mu blíží.`,
@@ -390,6 +394,34 @@ async function updatePowerCurve(limit){
   if(currentTab==="power")showTab("power");
   if(rateLimited)alert("Strava API dočasně omezilo počet požadavků. Zkus 'Načíst další jízdy' za pár minut.");
 }
+let _ftpRefineRunning=false;
+async function refineFtpTests(){
+  if(_ftpRefineRunning)return;
+  _ftpRefineRunning=true;
+  const token=await getToken();
+  if(!token){_ftpRefineRunning=false;alert("Nejdřív se přihlas přes Strava v Adminu.");return;}
+  const cache=pcCache();
+  const todo=RIDES.filter(r=>matchesTestKeyword(r.name)&&r.watts>0&&!cache[r.id]);
+  if(!todo.length){
+    _ftpRefineRunning=false;
+    alert("Žádné nové testovací jízdy k upřesnění (podle klíčových slov v Adminu). Pokud test chybí, zkontroluj, jestli jeho název odpovídá klíčovým slovům.");
+    return;
+  }
+  let done=0,rateLimited=false;
+  for(const r of todo){
+    try{
+      const best=await fetchActivityBest(token,r);
+      if(best)cache[r.id]=best;
+      done++;
+      savePcCache(cache);
+    }catch(e){if(e&&e.rateLimited){rateLimited=true;break;}}
+  }
+  invalidateAutoFtpCache();
+  _ftpRefineRunning=false;
+  recompute();updateHeader();
+  showTab("admin");
+  setTimeout(()=>alert(rateLimited?`Zpracováno ${done}/${todo.length} — Strava dočasně omezila požadavky, zkus zbytek za chvíli znovu.`:`Hotovo — upřesněno ${done} testovacích jízd.`),50);
+}
 function aggregatePowerCurve(){
   const cache=pcCache();
   const now=new Date();
@@ -473,37 +505,54 @@ function getZones(ftp){return[
 function getZone(w,ftp){const f=ftp||getCurrentFtp();return getZones(f).find(z=>w>=z.min&&w<z.max)||getZones(f)[0];}
 
 // ── AUTO FTP ZE STRAVA DAT ──────────────────────────────────────────────────────
-// FTP se NEZADÁVÁ ručně — odhaduje se z reálných jízd (Strava weighted_average_watts
-// = jejich Normalized Power, žádné extra API volání navíc). Jízda s dost dlouhým
-// a dost tvrdým úsilím (test/ramp/threshold blok) může nastavit nový "peak" FTP,
-// který pak platí od svého data dál (dokud ho nepřekoná jízda ještě lepší).
+// FTP se NEZADÁVÁ paušálně ručně — počítá se jen z jízd, které vypadají jako
+// SKUTEČNÝ FTP test (podle klíčových slov v názvu, např. "ramp", "FTP test"),
+// případně z ručně přidaných záznamů (např. výsledek z Garmin Connect).
+// Běžné endurance/Zwift jízdy se do toho NEPOČÍTAJÍ, i kdyby měly slušný výkon.
 let _autoFtpPeaksCache=null;
 function invalidateAutoFtpCache(){_autoFtpPeaksCache=null;}
+function matchesTestKeyword(name){
+  const kws=(S.ftpTestKeywords||"ramp,ftp test,ramp test,ftp ramp").split(",").map(k=>k.trim().toLowerCase()).filter(Boolean);
+  const n=(name||"").toLowerCase();
+  return kws.some(k=>k&&n.includes(k));
+}
+function estimateFtpFromBest(best,isRamp){
+  if(!best)return 0;
+  if(isRamp&&best["60"])return Math.round(best["60"]*0.75);   // ramp test: ~75 % nejlepšího 1min výkonu
+  if(best["1200"])return Math.round(best["1200"]*0.95);        // klasický 20min test
+  if(best["300"])return Math.round(best["300"]*0.85);          // kratší test (fallback)
+  if(best["3600"])return Math.round(best["3600"]*1.00);        // hodinová časovka ≈ FTP přímo
+  return 0;
+}
 function computeAutoFtpPeaks(){
   if(_autoFtpPeaksCache)return _autoFtpPeaksCache;
+  const cache=pcCache();
   const candidates=[];
-  RIDES.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(r=>{
-    const np=r.wavg||0;
-    if(np<=0)return;
-    const durMin=r.dur/60;
-    let ratio=null;
-    if(durMin>=55)ratio=1.00;      // ~60min TT/threshold blok ≈ FTP přímo
-    else if(durMin>=35)ratio=0.97; // delší práh/SST blok
-    else if(durMin>=18)ratio=0.95; // klasický 20min test
-    if(ratio===null)return;
-    candidates.push({date:r.date,rideId:r.id,rideName:r.name,est:Math.round(np*ratio)});
+  RIDES.forEach(r=>{
+    if(!matchesTestKeyword(r.name))return;
+    const best=cache[r.id];
+    const isRamp=/ramp/i.test(r.name||"");
+    let est=best?estimateFtpFromBest(best,isRamp):0;
+    let refined=!!est;
+    if(!est)est=r.wavg||r.watts||0; // dokud nejsou stažená detailní data, hrubý odhad z průměru/NP jízdy
+    if(est>0)candidates.push({date:r.date,rideId:r.id,rideName:r.name,est,refined});
   });
-  let peaks=[],max=0;
-  candidates.forEach(c=>{if(c.est>max){max=c.est;peaks.push({d:c.date,f:c.est,l:c.rideName,rideId:c.rideId});}});
+  (S.ftpManualEntries||[]).forEach(e=>{
+    if(e.f>0)candidates.push({date:e.d,rideId:null,rideName:e.l||"Ruční záznam",est:e.f,refined:true});
+  });
+  candidates.sort((a,b)=>a.date.localeCompare(b.date));
+  // Každý detekovaný test / ruční záznam = platné FTP od svého data dál — může jít nahoru i dolů
+  // (např. pokles po nemoci/pauze), žádný "jen rostoucí" filtr.
+  const peaks=candidates.map(c=>({d:c.date,f:c.est,l:c.rideName,rideId:c.rideId,refined:c.refined}));
   _autoFtpPeaksCache=peaks;
   return peaks;
 }
 function getAutoFtpAtDate(dateStr){
   const peaks=computeAutoFtpPeaks();
-  if(!peaks.length)return S.ftp||0; // zatím žádná detekovaná jízda — použij základní hodnotu z Adminu jako start
+  if(!peaks.length)return S.ftp||0; // zatím žádný detekovaný test — použij základní hodnotu z Adminu jako start
   const applicable=peaks.filter(p=>p.d<=dateStr);
   if(applicable.length)return applicable[applicable.length-1].f;
-  return peaks[0].f; // jízda předchází první detekovaný peak
+  return peaks[0].f; // jízda předchází první detekovaný test
 }
 function getCurrentFtp(){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(new Date().toISOString().slice(0,10));}
 function getEffectiveFtpAtDate(dateStr){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(dateStr);}
@@ -910,14 +959,14 @@ function renderPower(){
   <div class="card">
     <div class="card-header"><div class="card-title">FTP Trend (auto ze Strava)</div>${infoBtn("ftp")}</div>
     ${infoBox("ftp")}
-    <div style="font-size:11px;color:#64748b;margin:2px 0 8px">Automaticky detekováno z tvých jízd (delší tvrdé úsilí = potenciální nové maximum). Žádné ruční zadávání.</div>
+    <div style="font-size:11px;color:#64748b;margin:2px 0 8px">Detekováno jen z jízd, které v názvu odpovídají klíčovým slovům pro FTP test (nastavíš v Adminu) + případné ruční záznamy. Běžné jízdy se nepočítají.</div>
     <div style="margin-top:6px">
       ${peaks.map((e,i,arr)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<arr.length-1?"1px solid #334155":"none"}">
         <div style="width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0"></div>
-        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
-        <div style="font-size:18px;font-weight:800;color:#a78bfa">${e.f}W</div>
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l}${e.refined?"":' <span style="color:#fbbf24;font-weight:400">(hrubý odhad)</span>'}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
+        <div style="font-size:18px;font-weight:800;color:#a78bfa">${e.refined?"":"≈"}${e.f}W</div>
         ${i>0?`<div style="font-size:11px;font-weight:700;color:${e.f-arr[i-1].f>=0?"#34d399":"#ef4444"}">${e.f-arr[i-1].f>=0?"+":""}${e.f-arr[i-1].f}W</div>`:""}
-      </div>`).join("")||`<div style="font-size:12px;color:#64748b;text-align:center;padding:10px">Zatím žádný detekovaný test. Potřebuješ jízdu s úsilím 18+ min a naměřeným výkonem. Pokud máš starší jízdy bez dat, zkus v Adminu "Kompletní resync".</div>`}
+      </div>`).join("")||`<div style="font-size:12px;color:#64748b;text-align:center;padding:10px">Zatím žádný detekovaný test. Jízda musí mít v názvu klíčové slovo (viz Admin) a naměřený výkon. Zkontroluj klíčová slova nebo přidej ruční záznam v Adminu.</div>`}
     </div>
   </div>
   <div class="card">
@@ -1760,23 +1809,77 @@ function renderAdmin(){
 
   <div class="card" style="border-color:${S.ftpMode==="manual"?"#854d0e":"#334155"}">
     <div style="font-size:15px;font-weight:800;color:#a78bfa;margin-bottom:4px">📈 FTP — auto ze Strava</div>
-    <div style="font-size:11px;color:#64748b;margin-bottom:10px">FTP se počítá automaticky z tvých jízd (Strava Normalized Power + délka úsilí) — ty jsi jen konzument dat, nic nezadáváš ručně. Detailní trend a detekované testy najdeš v záložce <strong>Power → FTP Trend</strong>.</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">FTP se počítá jen z jízd, které vypadají jako <strong>skutečný FTP test</strong> (podle klíčových slov v názvu) — běžné endurance/Zwift jízdy se do toho nepočítají, i kdyby měly slušný výkon. Detailní trend najdeš v záložce <strong>Power → FTP Trend</strong>.</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <button onclick="setFtpMode('auto')" style="flex:1;background:${S.ftpMode==="auto"?"#1e40af":"#0f172a"};border:1px solid ${S.ftpMode==="auto"?"#1e40af":"#334155"};border-radius:8px;color:#e2e8f0;font-size:12px;font-weight:700;padding:8px;cursor:pointer">✅ Reálná data (auto)</button>
       <button onclick="document.getElementById('sim-panel').style.display='block'" style="flex:1;background:${S.ftpMode==="manual"?"#854d0e":"#0f172a"};border:1px solid ${S.ftpMode==="manual"?"#854d0e":"#334155"};border-radius:8px;color:#e2e8f0;font-size:12px;font-weight:700;padding:8px;cursor:pointer">🧪 Simulace</button>
     </div>
-    <div id="sim-panel" style="display:${S.ftpMode==="manual"?"block":"none"};background:#0f172a;border-radius:8px;padding:10px">
+    <div id="sim-panel" style="display:${S.ftpMode==="manual"?"block":"none"};background:#0f172a;border-radius:8px;padding:10px;margin-bottom:12px">
       <div style="font-size:11px;color:#64748b;margin-bottom:8px">Zkus si "co by bylo kdyby" — zadej hypotetické FTP a projeví se okamžitě napříč celou appkou (TSS, zóny, Forma, detail jízd). Nic se natrvalo nepřepíše.</div>
       <div class="field-label">Hypotetické FTP (W)</div>
       <input id="sim-ftp" type="number" value="${S.ftp}" placeholder="např. 270">
       <button class="btn" onclick="applySimFtp()" style="background:#854d0e;margin-top:8px;width:100%">🧪 Aplikovat simulaci</button>
       ${S.ftpMode==="manual"?`<button class="btn" onclick="setFtpMode('auto')" style="background:#334155;margin-top:8px;width:100%;font-size:12px">↩ Vrátit na reálná data ze Strava</button>`:""}
     </div>
-    <div style="display:flex;gap:8px;margin-top:12px">
+
+    <div class="field-label">Klíčová slova pro detekci FTP testu v názvu jízdy</div>
+    <input id="s-ftpkw" value="${S.ftpTestKeywords}" placeholder="ramp,ftp test,ramp test,ftp ramp">
+    <button class="btn" onclick="saveFtpKeywords()" style="background:#1e40af;margin-top:8px;width:100%;font-size:12px">💾 Uložit klíčová slova</button>
+    <button class="btn" onclick="refineFtpTests()" style="background:#7c3aed;margin-top:8px;width:100%">🎯 Zpřesnit FTP testy (stáhne detailní data z nalezených jízd)</button>
+    <div style="font-size:10px;color:#475569;margin-top:6px">Bez zpřesnění appka u testu použije jen hrubý odhad z průměrného výkonu jízdy. Po zpřesnění spočítá skutečnou hodnotu z výkonové křivky (ramp test: 75 % nejlepšího 1min výkonu; klasický test: 95 % nejlepšího 20min výkonu).</div>
+
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #334155">
+      <div style="font-size:12px;font-weight:700;color:#a78bfa;margin-bottom:4px">✍️ Ruční změny FTP v čase</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Přidej FTP k libovolnému datu — výsledek testu odjinud (Garmin Connect a podobně), nebo prostě úprava po nemoci/pauze/zlepšení, kterou znáš a chceš, aby se od toho data reálně počítala. Klidně i směrem dolů. Kombinuje se s testy detekovanými ze Strava — vždy platí nejnovější záznam k danému datu (ruční i automatický), žádné "jen nahoru".</div>
+      <div id="ftp-manual-list">
+        ${(S.ftpManualEntries||[]).slice().sort((a,b)=>a.d.localeCompare(b.d)).map(e=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #334155">
+          <div style="width:7px;height:7px;border-radius:50%;background:#34d399;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l||"Ruční záznam"}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
+          <div style="font-size:14px;font-weight:800;color:#34d399;white-space:nowrap">${e.f}W</div>
+          <button onclick="removeFtpManualEntry('${e.d}',${e.f})" style="background:none;border:none;color:#64748b;font-size:13px;cursor:pointer;padding:2px 4px">✕</button>
+        </div>`).join("")||`<div style="font-size:11px;color:#64748b;text-align:center;padding:6px">Zatím žádné</div>`}
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <div><div class="field-label">Datum (od kdy platí)</div><input id="ftpm-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div><div class="field-label">FTP (W)</div><input id="ftpm-watts" type="number" placeholder="250"></div>
+      </div>
+      <div class="field-label">Popis</div><input id="ftpm-label" placeholder="např. Garmin Ramp Test / Po nemoci">
+      <button class="btn" onclick="addFtpManualEntry()" style="background:#166534;margin-top:8px;width:100%;font-size:12px">➕ Přidat záznam</button>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn" onclick="fullResyncAll()" style="flex:1;background:#334155;font-size:12px">🔄 Kompletní resync (doplní chybějící data)</button>
     </div>
     <button class="btn" onclick="recalcTssFromAuto()" style="background:#334155;margin-top:8px;width:100%;font-size:12px">🔁 Přepočítat uložené TSS podle auto historie</button>
   </div>`;
+}
+function saveFtpKeywords(){
+  const v=document.getElementById("s-ftpkw")?.value?.trim();
+  S.ftpTestKeywords=v||"ramp,ftp test,ramp test,ftp ramp";
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
+}
+function addFtpManualEntry(){
+  const d=document.getElementById("ftpm-date")?.value;
+  const l=document.getElementById("ftpm-label")?.value?.trim()||"Ruční záznam";
+  const f=Number(document.getElementById("ftpm-watts")?.value);
+  if(!d||!f||f<=0){alert("Vyplň datum a watty.");return;}
+  S.ftpManualEntries=S.ftpManualEntries||[];
+  S.ftpManualEntries.push({l,f,d});
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
+}
+function removeFtpManualEntry(d,f){
+  if(!confirm("Smazat tento ruční záznam?"))return;
+  S.ftpManualEntries=(S.ftpManualEntries||[]).filter(e=>!(e.d===d&&Number(e.f)===Number(f)));
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
 }
 function applySimFtp(){
   const f=Number(document.getElementById("sim-ftp")?.value);
@@ -1840,7 +1943,7 @@ function saveSettings(){
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
 }
 function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync","cyc_ride_streams","cyc_pc_cache"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};rideStreamsCache={};detailRideId=null;invalidateAutoFtpCache();updateHeader();showTab("admin");}}
-const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpMode:"auto"};
+const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpMode:"auto",ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",ftpManualEntries:[]};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
