@@ -124,6 +124,7 @@ let RIDES = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
 let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
 let FITNESS=[], LATEST={ctl:0,atl:0,tsb:0};
 let currentTab="forma", selRide=null, aiLoading=false, planLoading=false;
+let jizdyShown=30, jizdyObserver=null;
 let aiRideCtx=[];
 let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
 
@@ -688,7 +689,7 @@ function showTab(tab){
   const c=document.getElementById("content");
   if(tab==="forma")c.innerHTML=renderForma();
   else if(tab==="power")c.innerHTML=renderPower();
-  else if(tab==="jizdy")c.innerHTML=renderJizdy();
+  else if(tab==="jizdy"){jizdyShown=30;c.innerHTML=renderJizdy();initJizdyScroll();}
   else if(tab==="tf")c.innerHTML=renderTF();
   else if(tab==="plan")c.innerHTML=renderPlan();
   else if(tab==="ai")c.innerHTML=renderAI();
@@ -766,44 +767,88 @@ function renderPower(){
 }
 
 // ── JÍZDY ─────────────────────────────────────────────────────────────────────
-function renderJizdy(){
-  if(!RIDES.length)return noData();
+function renderRideCard(r){
   const ftp=S.ftp;
-  return `<div style="font-size:12px;color:#64748b;margin-bottom:8px">Posledních 20 jízd · klikni pro detail</div>`+
-  RIDES.slice(0,20).map(r=>{
-    const z=getZone(r.watts||0),sel=selRide===r.id;
-    const detail=sel?`<div style="margin-top:8px;padding:8px 10px;background:#0f172a;border-radius:8px">
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:6px">
-        W/bpm: <span style="color:#38bdf8;font-weight:700">${r.hr>0?(r.watts/r.hr).toFixed(2):"–"}</span>
-        &nbsp;· Intenzita: <span style="color:${z.c};font-weight:700">${ftp>0?Math.round(r.watts/ftp*100):"-"}% FTP</span>
-        &nbsp;· TSS: <span style="color:#a78bfa;font-weight:700">${r.tss}</span>
-        ${r.prs>0?`&nbsp;· 🏆 ${r.prs} PR`:""}
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:10px;color:#475569">ID: ${r.id}</span>
-        <button class="copy-id" onclick="copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})">📋 Kopírovat pro AI</button>
-        <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
-      </div>
-    </div>`:"";
-    return `<div class="ride" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div style="flex:1;min-width:0"><div class="ride-name">${r.name}</div><div class="ride-meta">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div></div>
-        <div style="text-align:right;flex-shrink:0;margin-left:8px"><div style="font-size:14px;font-weight:700;color:${z.c}">${r.watts>0?r.watts+"W":"–"}</div><div style="font-size:9px;color:#64748b">${z.n}</div></div>
-      </div>
-      <div class="ride-stats">
-        <span class="ride-stat">📍 ${r.km.toFixed(0)}km</span>
-        <span class="ride-stat">⏱ ${Math.round(r.dur/60)}min</span>
-        <span class="ride-stat">⛰ ${r.elev}m</span>
-        ${r.hr>0?`<span class="ride-stat">❤️ ${r.hr}bpm</span>`:""}
-        <span class="ride-stat">🔥 ${r.tss}TSS</span>
-        ${r.prs>0?`<span class="ride-stat">🏆 ${r.prs}PR</span>`:""}
-      </div>
-      ${detail}
-    </div>`;
-  }).join("");
+  const z=getZone(r.watts||0),sel=selRide===r.id;
+  const detail=sel?`<div style="margin-top:8px;padding:8px 10px;background:#0f172a;border-radius:8px">
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:6px">
+      W/bpm: <span style="color:#38bdf8;font-weight:700">${r.hr>0?(r.watts/r.hr).toFixed(2):"–"}</span>
+      &nbsp;· Intenzita: <span style="color:${z.c};font-weight:700">${ftp>0?Math.round(r.watts/ftp*100):"-"}% FTP</span>
+      &nbsp;· TSS: <span style="color:#a78bfa;font-weight:700">${r.tss}</span>
+      ${r.prs>0?`&nbsp;· 🏆 ${r.prs} PR`:""}
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:10px;color:#475569">ID: ${r.id}</span>
+      <button class="copy-id" onclick="copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})">📋 Kopírovat pro AI</button>
+      <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
+    </div>
+  </div>`:"";
+  return `<div class="ride" id="ride-${r.id}" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="flex:1;min-width:0"><div class="ride-name">${r.name}</div><div class="ride-meta">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div></div>
+      <div style="text-align:right;flex-shrink:0;margin-left:8px"><div style="font-size:14px;font-weight:700;color:${z.c}">${r.watts>0?r.watts+"W":"–"}</div><div style="font-size:9px;color:#64748b">${z.n}</div></div>
+    </div>
+    <div class="ride-stats">
+      <span class="ride-stat">📍 ${r.km.toFixed(0)}km</span>
+      <span class="ride-stat">⏱ ${Math.round(r.dur/60)}min</span>
+      <span class="ride-stat">⛰ ${r.elev}m</span>
+      ${r.hr>0?`<span class="ride-stat">❤️ ${r.hr}bpm</span>`:""}
+      <span class="ride-stat">🔥 ${r.tss}TSS</span>
+      ${r.prs>0?`<span class="ride-stat">🏆 ${r.prs}PR</span>`:""}
+    </div>
+    ${detail}
+  </div>`;
 }
 
-function toggleRide(id){selRide=selRide===id?null:id;if(currentTab==="jizdy")document.getElementById("content").innerHTML=renderJizdy();}
+function jizdyFooterHTML(shown){
+  return shown<RIDES.length
+    ?`<div id="jizdy-sentinel" style="padding:16px;text-align:center;color:#64748b;font-size:12px">⏳ Načítám další jízdy…</div>`
+    :`<div id="jizdy-sentinel-done" style="padding:16px;text-align:center;color:#475569;font-size:11px">Zobrazeny všechny jízdy (${RIDES.length})</div>`;
+}
+
+// Full render - used only when the tab is freshly opened
+function renderJizdy(){
+  if(!RIDES.length)return noData();
+  const shown=Math.min(jizdyShown,RIDES.length);
+  return `<div style="font-size:12px;color:#64748b;margin-bottom:8px" id="jizdy-count">Zobrazeno ${shown} z ${RIDES.length} jízd · klikni pro detail</div>`+
+  `<div id="jizdy-list">${RIDES.slice(0,shown).map(renderRideCard).join("")}</div>`+
+  jizdyFooterHTML(shown);
+}
+
+// Scroll-triggered load: appends only the new batch of cards, doesn't touch existing DOM nodes
+function loadMoreJizdy(){
+  if(jizdyShown>=RIDES.length)return;
+  const prevShown=jizdyShown;
+  jizdyShown=Math.min(jizdyShown+30,RIDES.length);
+  if(currentTab!=="jizdy")return;
+  const list=document.getElementById("jizdy-list");
+  const oldSentinel=document.getElementById("jizdy-sentinel");
+  if(!list){document.getElementById("content").innerHTML=renderJizdy();initJizdyScroll();return;}
+  const newCardsHTML=RIDES.slice(prevShown,jizdyShown).map(renderRideCard).join("");
+  list.insertAdjacentHTML("beforeend",newCardsHTML);
+  if(oldSentinel)oldSentinel.outerHTML=jizdyFooterHTML(jizdyShown);
+  const countEl=document.getElementById("jizdy-count");
+  if(countEl)countEl.textContent=`Zobrazeno ${jizdyShown} z ${RIDES.length} jízd · klikni pro detail`;
+  initJizdyScroll();
+}
+
+function initJizdyScroll(){
+  const sentinel=document.getElementById("jizdy-sentinel");
+  if(jizdyObserver){jizdyObserver.disconnect();jizdyObserver=null;}
+  if(!sentinel)return;
+  jizdyObserver=new IntersectionObserver(entries=>{
+    if(entries[0].isIntersecting)loadMoreJizdy();
+  },{root:null,rootMargin:"300px"});
+  jizdyObserver.observe(sentinel);
+}
+
+function toggleRide(id){
+  selRide=selRide===id?null:id;
+  if(currentTab!=="jizdy")return;
+  const el=document.getElementById("ride-"+id);
+  const r=RIDES.find(x=>x.id===id);
+  if(el&&r)el.outerHTML=renderRideCard(r);
+}
 
 function copyId(id,name,date,watts,hr,tss,km){
   const txt=`Jízda ID:${id} | ${name} | ${date} | ${watts}W | TF:${hr}bpm | TSS:${tss} | ${km}km`;
