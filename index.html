@@ -1112,7 +1112,8 @@ function renderAI(){
   ${aiHistory.length>0?`<div class="card">
     <div style="font-size:14px;font-weight:700;margin-bottom:10px">📋 Historie</div>
     ${aiHistory.map((h,i)=>`
-      <div style="background:#0f172a;border-radius:8px;padding:10px;margin-bottom:6px;border:1px solid #1e293b">
+      <div style="position:relative;background:#0f172a;border-radius:8px;padding:10px 28px 10px 10px;margin-bottom:6px;border:1px solid #1e293b">
+        <button onclick="deleteAIItem(${i})" title="Smazat tuto položku" style="position:absolute;top:6px;right:6px;background:none;border:none;color:#64748b;font-size:14px;line-height:1;cursor:pointer;padding:2px 4px">✕</button>
         <div style="font-size:10px;color:#475569;margin-bottom:3px">🕐 ${h.ts} ${h.type==="coach"?'<span style="color:#7c3aed">· 📅 Plán</span>':""}</div>
         <div style="font-size:11px;color:#38bdf8;font-weight:600;margin-bottom:4px">❓ ${h.q}</div>
         <div style="font-size:11px;color:#94a3b8">${h.a.slice(0,300)}${h.a.length>300?"…":""}</div>
@@ -1196,6 +1197,7 @@ async function askAI(){
 
 function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${mdBold(aiHistory[i].a)}</div></div>`;}
 function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");syncToCloud();showTab("ai");}
+function deleteAIItem(i){aiHistory.splice(i,1);localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));syncToCloud();showTab("ai");}
 
 // ── CLOUD SYNC (sdílení AI historie, nastavení a POWER CURVE cache mezi zařízeními) ──
 // Vyžaduje rozšířený Cloudflare Worker s KV úložištěm (viz worker.js šablona).
