@@ -51,6 +51,8 @@ textarea{resize:vertical}
 .btn{border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;padding:10px 16px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .kpi-box{background:#0f172a;border-radius:8px;padding:10px}
+.kpi-box-info{position:relative;padding-right:24px}
+.info-btn-mini{position:absolute;top:6px;right:6px;background:#1e293b;border:1px solid #334155;border-radius:50%;width:16px;height:16px;color:#64748b;font-size:9px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;line-height:1;padding:0}
 .kpi-box-label{font-size:10px;color:#64748b}
 .kpi-box-val{font-size:18px;font-weight:800;margin:2px 0}
 .kpi-box-sub{font-size:10px;color:#94a3b8}
@@ -62,9 +64,23 @@ textarea{resize:vertical}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;display:flex;align-items:flex-end}
 .modal{background:#1e293b;border-radius:16px 16px 0 0;padding:20px;width:100%;max-height:80vh;overflow-y:auto;border-top:1px solid #334155}
 .modal-close{float:right;background:none;border:none;color:#64748b;font-size:20px;cursor:pointer}
+#chart-tooltip{position:fixed;display:none;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:7px 10px;font-size:11px;line-height:1.5;color:#e2e8f0;pointer-events:none;z-index:999;box-shadow:0 6px 16px rgba(0,0,0,.5);white-space:nowrap}
+#chart-tooltip b{font-weight:800}
+svg[data-cid]{touch-action:none;cursor:crosshair}
+.chart-zoom{position:relative;overflow:hidden;border-radius:8px}
+.zoom-range{font-size:9px;color:#475569;text-align:center;margin-top:2px}
+.zoom-ctrl{position:absolute;top:2px;right:2px;display:flex;flex-direction:column;gap:4px;z-index:5}
+.zoom-btn{width:24px;height:24px;border-radius:6px;background:rgba(15,23,42,.85);border:1px solid #334155;color:#e2e8f0;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;padding:0}
+.zoom-btn:active{background:#1e40af}
+@media (min-width:640px){
+  body{display:flex;justify-content:center}
+  #app{max-width:480px;width:100%;box-shadow:0 0 60px rgba(0,0,0,.55)}
+  .nav{max-width:480px;left:50%;transform:translateX(-50%)}
+}
 </style>
 </head>
 <body>
+<div id="chart-tooltip"></div>
 <div id="app">
   <div class="header">
     <div style="display:flex;align-items:center;gap:8px">
@@ -106,14 +122,24 @@ let S = JSON.parse(localStorage.getItem("cyc_s")||"null") || {
   sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině. Vždy vezmi v úvahu CTL/ATL/TSB, historii jízd a zdravotní stav.",
   quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],
   workerUrl:"",
+  ftpMode:"auto", // "auto" = FTP se počítá ze Strava dat (reálné), "manual" = simulace s ručně zadaným FTP
+  ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",
+  ftpManualEntries:[],
 };
+if(!S.ftpMode)S.ftpMode="auto";
+if(!S.ftpTestKeywords)S.ftpTestKeywords="ramp,ftp test,ramp test,ftp ramp";
+if(!S.ftpManualEntries)S.ftpManualEntries=[];
+if(!S.weeklyHours)S.weeklyHours=8;
 let RIDES = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
 let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
 let FITNESS=[], LATEST={ctl:0,atl:0,tsb:0};
 let currentTab="forma", selRide=null, aiLoading=false, planLoading=false;
+let jizdyShown=30, jizdyObserver=null;
 let aiRideCtx=[];
-let planCache=null;
-let TRAINING_PLANS = JSON.parse(localStorage.getItem("cyc_workouts")||"[]");
+let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
+let TRAINING_PLANS=JSON.parse(localStorage.getItem("cyc_workouts")||"[]");
+let detailRideId=null;
+let rideStreamsCache=JSON.parse(localStorage.getItem("cyc_ride_streams")||"{}");
 
 // ── INFO TEXTS ────────────────────────────────────────────────────────────────
 const INFO = {
@@ -150,8 +176,8 @@ const INFO = {
     • <strong>20–60 min</strong>: FTP zóna — základní výkonnost<br><br>
     <strong>Poměr 20min/5min výkon</strong> ideálně 70–75 %. Tvoje rezerva je právě zde — krátkodobý výkon je silný, FTP vytrvalost má prostor pro růst.`,
 
-  zones: `<h4>Výkonnostní zóny</h4>
-    Zóny jsou odvozeny od tvého FTP (${S.ftp}W).<br><br>
+  zones: ()=>`<h4>Výkonnostní zóny</h4>
+    Zóny jsou odvozeny od tvého FTP (${getCurrentFtp()}W).<br><br>
     <strong>Z1 Regenerace:</strong> Velmi lehce, aktivní zotavení. Nezlepšuje výkonnost, pomáhá regenerovat.<br>
     <strong>Z2 Aerobní:</strong> Základ kondice. 80% objemu má být zde. Buduje tukový metabolismus.<br>
     <strong>Z3 Tempo:</strong> "Nepříjemná" zóna — nezlepšuje výkonnost tolik jako Z2 nebo Z4/Z5.<br>
@@ -175,15 +201,48 @@ const INFO = {
     • Pokles = nemoc, deload, nebo nedostatek času<br><br>
     <strong>Tvůj profil:</strong> Květen byl extrémní (DPNK akce). Červenec je nižší objem po nemoci — to je správně, tělo potřebuje nabrat síly.`,
 
-  ftp: `<h4>FTP — Functional Threshold Power</h4>
+  ftp: ()=>`<h4>FTP — Functional Threshold Power</h4>
     Nejvyšší průměrný výkon v wattech, který udržíš po dobu 1 hodiny. Základní metrika výkonnosti cyklisty.<br><br>
     <strong>W/kg klíčová čísla:</strong><br>
-    <span class="tag" style="background:#1e293b;color:#94a3b8">< 2.5</span> Rekreační<br>
+    <span class="tag" style="background:#1e293b;color:#94a3b8">&lt; 2.5</span> Rekreační<br>
     <span class="tag" style="background:#0c2a4a;color:#38bdf8">2.5–3.0</span> Sportovec<br>
-    <span class="tag" style="background:#0a2a0a;color:#34d399">3.0–3.5</span> Pokročilý (ty: 3.22)<br>
+    <span class="tag" style="background:#0a2a0a;color:#34d399">3.0–3.5</span> Pokročilý (ty: ${(getCurrentFtp()/S.weight).toFixed(2)})<br>
     <span class="tag" style="background:#2a1500;color:#fbbf24">3.5–4.0</span> Závodník<br>
-    <span class="tag" style="background:#2a0a0a;color:#ef4444">> 4.0</span> Elite<br><br>
-    <strong>Tvůj trend:</strong> 228W → 238W → 245W → est. 248W. +20W za půl roku = výborný progres.`,
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 4.0</span> Elite<br><br>
+    <strong>Odkud se bere tvoje FTP:</strong> Nezadáváš ho paušálně ručně — počítá se jen z jízd, jejichž název odpovídá klíčovým slovům pro FTP test (nastavíš v Adminu, výchozí "ramp", "ftp test"), plus z ručně přidaných záznamů k libovolnému datu (test odjinud, úprava po nemoci apod.). Nejnovější platný záznam k danému dni určuje tehdejší FTP — může jít nahoru i dolů, žádný "jen rostoucí" filtr. Běžné jízdy se do toho nepočítají. V Adminu si navíc můžeš pro porovnání zapnout ruční "co by bylo kdyby" simulaci.`,
+
+  rideNP: `<h4>NP — Normalizovaný výkon</h4>
+    Není to prostý průměr, ale vážený výkon, který zohledňuje kolísání (klouzavý 30s průměr umocněný na 4. a pak odmocněný). Lépe vyjadřuje skutečnou fyziologickou zátěž jízdy — u přerušovaných/kopcovitých jízd bývá vyšší než průměr, u rovnoměrné jízdy (časovka, Zwift SST) se mu blíží.`,
+
+  rideIF: `<h4>IF — Intensity Factor (NP/FTP)</h4>
+    Jak náročná byla jízda vzhledem k tvému FTP.<br><br>
+    <span class="tag" style="background:#1e293b;color:#94a3b8">&lt; 0.75</span> Regenerace/Z2<br>
+    <span class="tag" style="background:#0c2a4a;color:#38bdf8">0.75–0.85</span> Tempo/vytrvalost<br>
+    <span class="tag" style="background:#2a1500;color:#fbbf24">0.85–0.95</span> Práh/SST<br>
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 0.95</span> Nadprahové/závodní úsilí`,
+
+  rideVI: `<h4>VI — Variabilita výkonu (NP/průměr)</h4>
+    Jak "hladký" nebo "trhaný" byl výkon.<br><br>
+    • <strong>~1.00–1.05</strong> velmi rovnoměrné (Zwift SST, časovka)<br>
+    • <strong>1.05–1.15</strong> běžná venkovní jízda<br>
+    • <strong>&gt; 1.15</strong> hodně kolísavý výkon (kopce, peloton, sprinty, group ride)`,
+
+  rideTSS: `<h4>TSS — Training Stress Score</h4>
+    Celková zátěž jízdy — kombinuje intenzitu i délku. 100 TSS ≈ 1 hodina na FTP. Právě tahle hodnota se používá pro výpočet CTL/ATL/TSB v záložce Forma.`,
+
+  rideWtep: (ctx)=>`<h4>W/tep — Aerobní/kardio efektivita</h4>
+    Kolik wattů "koupíš" za jeden úder srdce. Vyšší = efektivnější podání výkonu vzhledem ke kardio zátěži. Klesá při únavě, nemoci nebo horku, roste s rostoucí kondicí.<br><br>
+    <strong>Orientační pásma</strong> (u tvé výkonnosti, FTP ${ctx.ftp||getCurrentFtp()}W k datu jízdy):<br>
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&lt; 1.3</span> Nízká — únava/nemoc/horko, nebo nízká intenzita s vysokou TF<br>
+    <span class="tag" style="background:#2a1500;color:#fbbf24">1.3–1.6</span> Průměrná<br>
+    <span class="tag" style="background:#0c2a4a;color:#38bdf8">1.6–2.0</span> Dobrá<br>
+    <span class="tag" style="background:#0a2a0a;color:#34d399">&gt; 2.0</span> Výborná (svěží, dobře trénovaný)<br><br>
+    Nejvíc ale vypovídá <strong>trend v čase u tebe samotného</strong> — číslo hodně závisí na FTP, TF maximu a typu jízdy (Z2 vs. práh), takže napříč cyklisty se moc srovnávat nedá.`,
+
+  rideCombo: `<h4>Kombinovaný graf</h4>
+    Zobrazuje víc metrik (výkon, tep, kadence, výška) v jednom grafu, aby šel snadno porovnat jejich průběh v čase — např. jak tep zpožděně roste za výkonem, nebo jak kadence klesá do kopce.<br><br>
+    Protože každá metrika má jiné jednotky (watty, tepy, otáčky, metry), jsou pro zobrazení <strong>přeškálované na stejný rozsah</strong> (0–100 % mezi min a max této jízdy) — jde tedy o porovnání <em>tvaru</em> průběhu, ne absolutních hodnot. Skutečné hodnoty v jednotkách uvidíš po najetí/kliknutí na graf.<br><br>
+    Zaškrtávátky pod grafem si zapneš/vypneš jednotlivé metriky.`,
 };
 
 // ── STRAVA OAUTH ──────────────────────────────────────────────────────────────
@@ -230,12 +289,12 @@ async function getToken() {
   return localStorage.getItem("cyc_token");
 }
 
-async function syncRides(token) {
-  setSyncInfo('<span style="color:#38bdf8">⏳ Stahuji jízdy...</span>');
+async function syncRides(token,force=false) {
+  setSyncInfo(force?'<span style="color:#38bdf8">⏳ Stahuji kompletní historii...</span>':'<span style="color:#38bdf8">⏳ Stahuji jízdy...</span>');
   try {
     const cached=JSON.parse(localStorage.getItem("cyc_rides")||"[]");
     let after=0;
-    if(cached.length>0){const n=cached.reduce((a,b)=>a.date>b.date?a:b);after=Math.floor(new Date(n.date).getTime()/1000)+1;}
+    if(!force&&cached.length>0){const n=cached.reduce((a,b)=>a.date>b.date?a:b);after=Math.floor(new Date(n.date).getTime()/1000)+1;}
     let page=1,newRides=[],hasMore=true;
     while(hasMore){
       let url=`https://www.strava.com/api/v3/athlete/activities?per_page=100&page=${page}`;
@@ -246,18 +305,33 @@ async function syncRides(token) {
       acts.forEach(a=>{
         if(!["Ride","VirtualRide"].includes(a.sport_type||a.type))return;
         const w=a.average_watts||0;
-        const tss=w>0&&S.ftp>0?Math.round((a.moving_time/3600)*(w/S.ftp)*(w/S.ftp)*100):Math.round(a.suffer_score||30);
-        newRides.push({id:String(a.id),name:a.name,date:(a.start_date_local||"").slice(0,10),
-          type:a.sport_type||a.type,tss,watts:Math.round(w),hr:Math.round(a.average_heartrate||0),
+        const rideDate=(a.start_date_local||"").slice(0,10);
+        newRides.push({id:String(a.id),name:a.name,date:rideDate,
+          type:a.sport_type||a.type,watts:Math.round(w),wavg:Math.round(a.weighted_average_watts||0),
+          hr:Math.round(a.average_heartrate||0),
           dur:a.moving_time||0,km:Math.round((a.distance||0)/100)/10,
-          elev:Math.round(a.total_elevation_gain||0),kcal:a.calories||0,prs:a.pr_count||0});
+          elev:Math.round(a.total_elevation_gain||0),kcal:Math.round(a.calories||a.kilojoules||0),prs:a.pr_count||0,
+          _suffer:Math.round(a.suffer_score||30)});
       });
       if(acts.length<100)hasMore=false;
       page++;
     }
     const ids=new Set(cached.map(r=>r.id));
-    RIDES=[...newRides.filter(r=>!ids.has(r.id)),...cached];
+    if(force){
+      const map={};
+      cached.forEach(r=>map[r.id]=r);
+      newRides.forEach(r=>map[r.id]={...map[r.id],...r}); // přepiš/doplň čerstvými daty ze Stravy (např. wavg)
+      RIDES=Object.values(map);
+    }else{
+      RIDES=[...newRides.filter(r=>!ids.has(r.id)),...cached];
+    }
     RIDES.sort((a,b)=>b.date.localeCompare(a.date));
+    invalidateAutoFtpCache(); // nová data mohou posunout detekované FTP peaky
+    RIDES.forEach(r=>{
+      const ftpAt=getAutoFtpAtDate(r.date); // reálné FTP odvozené ze Strava dat k datu jízdy
+      r.tss=(r.watts>0&&ftpAt>0)?Math.round((r.dur/3600)*(r.watts/ftpAt)*(r.watts/ftpAt)*100):(r.tss||r._suffer||30);
+      delete r._suffer;
+    });
     localStorage.setItem("cyc_rides",JSON.stringify(RIDES));
     const ts=new Date().toLocaleString("cs-CZ",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
     localStorage.setItem("cyc_last_sync",ts);
@@ -269,11 +343,148 @@ async function syncRides(token) {
 
 function setSyncInfo(msg){const el=document.getElementById("sync-info");if(el)el.innerHTML=msg;}
 
+// ── POWER CURVE (skutečná data ze Strava streamů, ne odhad) ────────────────────
+const PC_DURATIONS=[{k:"5",l:"5s"},{k:"60",l:"1min"},{k:"300",l:"5min"},{k:"1200",l:"20min"},{k:"3600",l:"1h"},{k:"7200",l:"2h"},{k:"10800",l:"3h"}];
+function pcCache(){try{return JSON.parse(localStorage.getItem("cyc_pc_cache")||"{}");}catch(e){return {};}}
+function savePcCache(c){localStorage.setItem("cyc_pc_cache",JSON.stringify(c));}
+function maxAvgWindow(arr,n){
+  if(!arr||!arr.length)return 0;
+  if(n<1)n=1;
+  if(n>=arr.length){let s=0;for(const v of arr)s+=v;return s/arr.length;}
+  let sum=0;for(let i=0;i<n;i++)sum+=arr[i];
+  let max=sum;
+  for(let i=n;i<arr.length;i++){sum+=arr[i]-arr[i-n];if(sum>max)max=sum;}
+  return max/n;
+}
+async function fetchActivityBest(token,ride){
+  const url=`https://www.strava.com/api/v3/activities/${ride.id}/streams?keys=watts,time&key_by_type=true&resolution=high`;
+  const res=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
+  if(res.status===429){const err=new Error("rate_limited");err.rateLimited=true;throw err;}
+  if(!res.ok)return null;
+  const d=await res.json();
+  const w=d.watts&&d.watts.data,t=d.time&&d.time.data;
+  if(!w||!w.length)return null;
+  let dt=1;
+  if(t&&t.length>1)dt=(t[t.length-1]-t[0])/(t.length-1)||1;
+  const best={date:ride.date};
+  PC_DURATIONS.forEach(pd=>{best[pd.k]=Math.round(maxAvgWindow(w,Math.max(1,Math.round(Number(pd.k)/dt))));});
+  return best;
+}
+let _pcRunning=false;
+async function updatePowerCurve(limit){
+  if(_pcRunning)return;
+  _pcRunning=true;
+  const statusEl=()=>document.getElementById("pc-status");
+  const token=await getToken();
+  if(!token){_pcRunning=false;alert("Nejdřív se přihlas přes Strava v záložce Admin.");return;}
+  // nejdřív stáhni, co už spočítalo jiné zařízení, ať tu práci neděláme znovu
+  if(S.workerUrl){const el=statusEl();if(el)el.textContent="☁️ Kontroluji, co už je spočtené jinde…";await syncFromCloud(true);}
+  const cache=pcCache();
+  const todo=RIDES.filter(r=>r.watts>0&&!cache[r.id]).slice(0,limit||20);
+  let done=0,rateLimited=false;
+  for(const r of todo){
+    try{
+      const best=await fetchActivityBest(token,r);
+      if(best)cache[r.id]=best;
+      done++;
+      savePcCache(cache);
+      const el=statusEl();if(el)el.textContent=`Zpracovávám power curve… ${done}/${todo.length}`;
+    }catch(e){if(e&&e.rateLimited){rateLimited=true;break;}}
+  }
+  // ulož spočtené i jen částečně dokončené do cloudu, ať to na dalším zařízení nemusíš počítat znovu
+  if(S.workerUrl)await syncToCloud();
+  _pcRunning=false;
+  if(currentTab==="power")showTab("power");
+  if(rateLimited)alert("Strava API dočasně omezilo počet požadavků. Zkus 'Načíst další jízdy' za pár minut.");
+}
+let _ftpRefineRunning=false;
+async function refineFtpTests(){
+  if(_ftpRefineRunning)return;
+  _ftpRefineRunning=true;
+  const token=await getToken();
+  if(!token){_ftpRefineRunning=false;alert("Nejdřív se přihlas přes Strava v Adminu.");return;}
+  const cache=pcCache();
+  const todo=RIDES.filter(r=>matchesTestKeyword(r.name)&&r.watts>0&&!cache[r.id]);
+  if(!todo.length){
+    _ftpRefineRunning=false;
+    alert("Žádné nové testovací jízdy k upřesnění (podle klíčových slov v Adminu). Pokud test chybí, zkontroluj, jestli jeho název odpovídá klíčovým slovům.");
+    return;
+  }
+  let done=0,rateLimited=false;
+  for(const r of todo){
+    try{
+      const best=await fetchActivityBest(token,r);
+      if(best)cache[r.id]=best;
+      done++;
+      savePcCache(cache);
+    }catch(e){if(e&&e.rateLimited){rateLimited=true;break;}}
+  }
+  invalidateAutoFtpCache();
+  _ftpRefineRunning=false;
+  recompute();updateHeader();
+  showTab("admin");
+  setTimeout(()=>alert(rateLimited?`Zpracováno ${done}/${todo.length} — Strava dočasně omezila požadavky, zkus zbytek za chvíli znovu.`:`Hotovo — upřesněno ${done} testovacích jízd.`),50);
+}
+function aggregatePowerCurve(){
+  const cache=pcCache();
+  const now=new Date();
+  const d42=new Date(now);d42.setDate(d42.getDate()-42);
+  const seasonStart=new Date(now.getFullYear(),0,1);
+  const rows=PC_DURATIONS.map(pd=>({l:pd.l,k:pd.k,d42:0,season:0}));
+  Object.values(cache).forEach(entry=>{
+    if(!entry||!entry.date)return;
+    const dt=new Date(entry.date);
+    rows.forEach(row=>{
+      const v=entry[row.k]||0;
+      if(dt>=d42&&v>row.d42)row.d42=v;
+      if(dt>=seasonStart&&v>row.season)row.season=v;
+    });
+  });
+  return rows;
+}
+function renderPowerCurveTable(){
+  const cache=pcCache();
+  const cachedCount=Object.keys(cache).length;
+  const totalEligible=RIDES.filter(r=>r.watts>0).length;
+  const rows=aggregatePowerCurve();
+  const wkg=S.weight||1;
+  const hasAny=rows.some(r=>r.d42>0||r.season>0);
+  return `
+  <div class="card">
+    <div class="card-header"><div><div class="card-title">Power Curve</div><div class="card-sub">Skutečná data ze Strava streamů · zpracováno ${cachedCount}/${totalEligible} jízd s výkonem</div></div>${infoBtn("power")}</div>
+    ${infoBox("power")}
+    ${hasAny?`
+    <div style="overflow-x:auto;margin-top:8px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+      <thead><tr style="color:#64748b">
+        <th style="text-align:left;padding:4px 6px">Čas</th>
+        <th style="text-align:right;padding:4px 6px;color:#38bdf8">42 dní</th>
+        <th style="text-align:right;padding:4px 6px;color:#38bdf8">W/kg</th>
+        <th style="text-align:right;padding:4px 6px;color:#a78bfa">Sezóna</th>
+        <th style="text-align:right;padding:4px 6px;color:#a78bfa">W/kg</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>`<tr style="border-top:1px solid #334155">
+          <td style="padding:5px 6px;color:#94a3b8">${r.l}</td>
+          <td style="padding:5px 6px;text-align:right;font-weight:700">${r.d42?r.d42+"W":"–"}</td>
+          <td style="padding:5px 6px;text-align:right;color:#64748b">${r.d42?(r.d42/wkg).toFixed(2):"–"}</td>
+          <td style="padding:5px 6px;text-align:right;font-weight:700">${r.season?r.season+"W":"–"}</td>
+          <td style="padding:5px 6px;text-align:right;color:#64748b">${r.season?(r.season/wkg).toFixed(2):"–"}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>`:`<div style="text-align:center;padding:20px 10px;color:#64748b;font-size:12px">Zatím žádná data — klikni níže na výpočet. Stáhnou se watt-streamy z jízd a spočítá se skutečná power curve (5s–3h).</div>`}
+    <div id="pc-status" style="font-size:11px;color:#64748b;margin-top:8px">${cachedCount<totalEligible?`Spočteno ${cachedCount} z ${totalEligible} jízd s výkonem.`:"Všechny jízdy s výkonem zpracovány."}</div>
+    ${cachedCount<totalEligible?`<button class="btn" style="width:100%;margin-top:8px;background:#1e40af" onclick="updatePowerCurve(20)">${cachedCount===0?"⚡ Spočítat power curve":"🔄 Načíst další jízdy (+20)"}</button>`:""}
+  </div>`;
+}
+
 // ── FITNESS CALC ──────────────────────────────────────────────────────────────
+function fmtD(iso){const p=String(iso).split("-");return p.length>=3?`${p[2]}.${p[1]}`:iso;}
 function recompute(){
   if(!RIDES.length){FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};return;}
   const byDate={};
-  RIDES.forEach(r=>{if(r.tss)byDate[r.date]=(byDate[r.date]||0)+r.tss;});
+  RIDES.forEach(r=>{const t=effectiveTss(r);if(t)byDate[r.date]=(byDate[r.date]||0)+t;});
   const start=new Date(Object.keys(byDate).sort()[0]);
   const end=new Date();
   const res=[];let ctl=20,atl=20;
@@ -281,7 +492,7 @@ function recompute(){
     const ds=d.toISOString().slice(0,10);
     const tss=byDate[ds]||0;
     ctl=ctl+(tss-ctl)/42;atl=atl+(tss-atl)/7;
-    res.push({date:ds,label:ds.slice(5),ctl:+(ctl.toFixed(1)),atl:+(atl.toFixed(1)),tsb:+((ctl-atl).toFixed(1)),tss});
+    res.push({date:ds,label:fmtD(ds),ctl:+(ctl.toFixed(1)),atl:+(atl.toFixed(1)),tsb:+((ctl-atl).toFixed(1)),tss});
   }
   FITNESS=res;LATEST=res[res.length-1];
 }
@@ -294,39 +505,105 @@ function getZones(ftp){return[
   {z:"Z5",n:"VO2max",min:Math.round(ftp*1.05),max:Math.round(ftp*1.20),c:"#ef4444"},
   {z:"Z6",n:"Anaerobní",min:Math.round(ftp*1.20),max:9999,c:"#a855f7"},
 ];}
-function getZone(w){return getZones(S.ftp).find(z=>w>=z.min&&w<z.max)||getZones(S.ftp)[0];}
+function getZone(w,ftp){const f=ftp||getCurrentFtp();return getZones(f).find(z=>w>=z.min&&w<z.max)||getZones(f)[0];}
+
+// ── AUTO FTP ZE STRAVA DAT ──────────────────────────────────────────────────────
+// FTP se NEZADÁVÁ paušálně ručně — počítá se jen z jízd, které vypadají jako
+// SKUTEČNÝ FTP test (podle klíčových slov v názvu, např. "ramp", "FTP test"),
+// případně z ručně přidaných záznamů (např. výsledek z Garmin Connect).
+// Běžné endurance/Zwift jízdy se do toho NEPOČÍTAJÍ, i kdyby měly slušný výkon.
+let _autoFtpPeaksCache=null;
+function invalidateAutoFtpCache(){_autoFtpPeaksCache=null;}
+function matchesTestKeyword(name){
+  const kws=(S.ftpTestKeywords||"ramp,ftp test,ramp test,ftp ramp").split(",").map(k=>k.trim().toLowerCase()).filter(Boolean);
+  const n=(name||"").toLowerCase();
+  return kws.some(k=>k&&n.includes(k));
+}
+function estimateFtpFromBest(best,isRamp){
+  if(!best)return 0;
+  if(isRamp&&best["60"])return Math.round(best["60"]*0.75);   // ramp test: ~75 % nejlepšího 1min výkonu
+  if(best["1200"])return Math.round(best["1200"]*0.95);        // klasický 20min test
+  if(best["300"])return Math.round(best["300"]*0.85);          // kratší test (fallback)
+  if(best["3600"])return Math.round(best["3600"]*1.00);        // hodinová časovka ≈ FTP přímo
+  return 0;
+}
+function computeAutoFtpPeaks(){
+  if(_autoFtpPeaksCache)return _autoFtpPeaksCache;
+  const cache=pcCache();
+  const candidates=[];
+  RIDES.forEach(r=>{
+    if(!matchesTestKeyword(r.name))return;
+    const best=cache[r.id];
+    const isRamp=/ramp/i.test(r.name||"");
+    let est=best?estimateFtpFromBest(best,isRamp):0;
+    let refined=!!est;
+    if(!est)est=r.wavg||r.watts||0; // dokud nejsou stažená detailní data, hrubý odhad z průměru/NP jízdy
+    if(est>0)candidates.push({date:r.date,rideId:r.id,rideName:r.name,est,refined});
+  });
+  (S.ftpManualEntries||[]).forEach(e=>{
+    if(e.f>0)candidates.push({date:e.d,rideId:null,rideName:e.l||"Ruční záznam",est:e.f,refined:true});
+  });
+  candidates.sort((a,b)=>a.date.localeCompare(b.date));
+  // Každý detekovaný test / ruční záznam = platné FTP od svého data dál — může jít nahoru i dolů
+  // (např. pokles po nemoci/pauze), žádný "jen rostoucí" filtr.
+  const peaks=candidates.map(c=>({d:c.date,f:c.est,l:c.rideName,rideId:c.rideId,refined:c.refined}));
+  _autoFtpPeaksCache=peaks;
+  return peaks;
+}
+function getAutoFtpAtDate(dateStr){
+  const peaks=computeAutoFtpPeaks();
+  if(!peaks.length)return S.ftp||0; // zatím žádný detekovaný test — použij základní hodnotu z Adminu jako start
+  const applicable=peaks.filter(p=>p.d<=dateStr);
+  if(applicable.length)return applicable[applicable.length-1].f;
+  return peaks[0].f; // jízda předchází první detekovaný test
+}
+function getCurrentFtp(){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(new Date().toISOString().slice(0,10));}
+function getEffectiveFtpAtDate(dateStr){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(dateStr);}
+function effectiveTss(r){
+  if(S.ftpMode==="manual"&&r.watts>0&&S.ftp>0)return Math.round((r.dur/3600)*(r.watts/S.ftp)*(r.watts/S.ftp)*100);
+  return r.tss||0;
+}
 
 // ── HEADER ────────────────────────────────────────────────────────────────────
 function updateHeader(){
   const tsb=LATEST.tsb||0;
   const tc=tsb>5?"#34d399":tsb>-10?"#fbbf24":"#ef4444";
   const tl=tsb>5?"Svěží":tsb>-10?"Neutrální":"Unavený";
+  const ftp=getCurrentFtp();
+  const simTag=S.ftpMode==="manual"?" · 🧪 SIMULACE":"";
   document.getElementById("h-name").textContent=S.name;
-  document.getElementById("h-sub").textContent=`FTP ${S.ftp}W · ${(S.ftp/S.weight).toFixed(2)} W/kg · ${RIDES.length} jízd`;
+  document.getElementById("h-sub").textContent=`FTP ${ftp}W · ${(ftp/S.weight).toFixed(2)} W/kg · ${RIDES.length} jízd${simTag}`;
   document.getElementById("kpi-ctl").textContent=LATEST.ctl||"-";
   document.getElementById("kpi-atl").textContent=LATEST.atl||"-";
   document.getElementById("kpi-tsb").textContent=LATEST.tsb||"-";
   document.getElementById("kpi-tsb").style.color=tc;
   document.getElementById("kpi-tsb-lbl").textContent=tl;
-  document.getElementById("kpi-ftp").textContent=S.ftp+"W";
-  document.getElementById("kpi-wkg").textContent=(S.ftp/S.weight).toFixed(2)+" W/kg";
+  document.getElementById("kpi-ftp").textContent=ftp+"W";
+  document.getElementById("kpi-wkg").textContent=(ftp/S.weight).toFixed(2)+" W/kg";
   const ls=localStorage.getItem("cyc_last_sync");
   if(ls)setSyncInfo(`<span style="color:#475569">Sync: ${ls}</span>`);
 }
 
 // ── SVG CHARTS ────────────────────────────────────────────────────────────────
-function svgLine(data,keys,colors,H=160){
-  const W=340,p={t:10,r:8,b:26,l:32};
+const CHART_W=340,CHART_PAD={t:10,r:8,b:26,l:32};
+let _chartMeta={},_chartId=0;
+const CHART_EVTS='onpointerdown="chartTip(event)" onpointermove="chartTip(event)" onpointerup="chartTip(event)" onpointerleave="hideTip()"';
+
+function svgLine(data,keys,colors,H=160,unit="",labels=null){
+  const id="c"+(_chartId++);
+  _chartMeta[id]={type:"line",data,keys,colors,unit:unit||"",labels:labels||keys};
+  const W=CHART_W,p=CHART_PAD;
   const cw=W-p.l-p.r,ch=H-p.t-p.b;
   const vals=data.flatMap(d=>keys.map(k=>d[k]||0));
   const minV=Math.min(...vals)-3,maxV=Math.max(...vals)+3;
   const px=i=>p.l+i/(data.length-1||1)*cw;
   const py=v=>p.t+ch-(v-minV)/(maxV-minV||1)*ch;
-  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
-  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;const v=Math.round(maxV-(maxV-minV)*i/3);
-    s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
-    s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`;}
+  let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
   const step=Math.max(1,Math.floor(data.length/6));
+  data.forEach((d,i)=>{if(i%step===0)s+=`<line x1="${px(i)}" y1="${p.t}" x2="${px(i)}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
+  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;const v=Math.round(maxV-(maxV-minV)*i/3);
+    s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;
+    s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`;}
   data.forEach((d,i)=>{if(i%step===0)s+=`<text x="${px(i)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label}</text>`;});
   if(keys.includes('tsb')){const y0=py(0);s+=`<line x1="${p.l}" y1="${y0}" x2="${W-p.r}" y2="${y0}" stroke="#475569" stroke-dasharray="4" stroke-width="1"/>`;}
   keys.forEach((k,ki)=>{const pts=data.map((d,i)=>`${px(i)},${py(d[k]||0)}`).join(" ");
@@ -334,28 +611,280 @@ function svgLine(data,keys,colors,H=160){
   return s+`</svg>`;
 }
 
-function svgBar(data,key,color,H=150,refVal=null){
-  const W=340,p={t:10,r:8,b:26,l:32};
+function svgBar(data,key,color,H=150,refVal=null,unit="",label="FTP"){
+  const id="c"+(_chartId++);
+  _chartMeta[id]={type:"bar",data,key,color,unit:unit||"",refVal,refLabel:label};
+  const W=CHART_W,p=CHART_PAD;
   const cw=W-p.l-p.r,ch=H-p.t-p.b;
   const vals=data.map(d=>d[key]||0);
   const maxV=Math.max(...vals)*1.1||1;
   const bw=Math.max(6,cw/data.length-2);
-  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">`;
-  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;
+  const lblStep=Math.max(1,Math.ceil(data.length/6));
+  let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
+  data.forEach((d,i)=>{const cx=p.l+i*(cw/data.length)+(cw/data.length)/2;
+    s+=`<line x1="${cx}" y1="${p.t}" x2="${cx}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
+  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;
     s+=`<text x="${p.l-3}" y="${y+3}" text-anchor="end" fill="#475569" font-size="9">${Math.round(maxV-maxV*i/3)}</text>`;}
   data.forEach((d,i)=>{
     const x=p.l+i*(cw/data.length)+(cw/data.length-bw)/2;
     const bh=((d[key]||0)/maxV)*ch;const y=p.t+ch-bh;
     s+=`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"/>`;
-    s+=`<text x="${x+bw/2}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="7">${d.label||d.d||""}</text>`;});
+    if(i%lblStep===0)s+=`<text x="${x+bw/2}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label||d.d||""}</text>`;});
   if(refVal){const y=p.t+ch-(refVal/maxV)*ch;
     s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5"/>`;
     s+=`<text x="${W-p.r}" y="${y-3}" text-anchor="end" fill="#a78bfa" font-size="9">FTP</text>`;}
   return s+`</svg>`;
 }
 
+// ── CHART TOOLTIP (hover na PC / dotyk na mobilu) ──────────────────────────────
+function chartTip(e){
+  const svg=e.currentTarget;
+  const meta=_chartMeta[svg.dataset.cid];
+  if(!meta)return;
+  if(e.pointerType==='mouse' && e.buttons===0 && e.type==='pointerdown')return;
+  e.preventDefault();
+  const rect=svg.getBoundingClientRect();
+  const relX=(e.clientX-rect.left)/rect.width*CHART_W;
+  const cw=CHART_W-CHART_PAD.l-CHART_PAD.r;
+  let idx;
+  if(meta.type==='line'||meta.type==='combo'){
+    idx=Math.round((relX-CHART_PAD.l)/cw*(meta.data.length-1));
+  }else{
+    idx=Math.floor((relX-CHART_PAD.l)/(cw/meta.data.length));
+  }
+  idx=Math.max(0,Math.min(meta.data.length-1,idx));
+  const d=meta.data[idx];
+  let html;
+  if(meta.type==='line'){
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||''}</div>`+
+      meta.keys.map((k,i)=>`<div><span style="color:${meta.colors[i]}">●</span> ${(meta.labels[i]||k).toUpperCase()}: <b>${d[k]??0}</b>${meta.unit}</div>`).join('');
+  }else if(meta.type==='combo'){
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||''}</div>`+
+      (meta.metrics.length?meta.metrics.map(m=>`<div><span style="color:${m.color}">●</span> ${m.label}: <b>${Math.round(d[m.key]??0)}</b>${m.unit}</div>`).join(''):
+      `<div style="color:#64748b">Zapni alespoň jednu metriku</div>`);
+  }else{
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||d.d||''}</div><div><span style="color:${meta.color}">●</span> <b>${d[meta.key]??0}</b>${meta.unit}</div>`+
+      (meta.refVal?`<div style="color:#a78bfa">${meta.refLabel}: <b>${meta.refVal}</b>${meta.unit}</div>`:'');
+  }
+  const tip=document.getElementById('chart-tooltip');
+  tip.innerHTML=html;
+  tip.style.display='block';
+  const tw=tip.offsetWidth||120,th=tip.offsetHeight||40;
+  let left=e.clientX+14,top=e.clientY-th-14;
+  if(left+tw>window.innerWidth-8)left=e.clientX-tw-14;
+  if(left<8)left=8;
+  if(top<8)top=e.clientY+14;
+  if(top+th>window.innerHeight-8)top=window.innerHeight-th-8;
+  tip.style.left=left+'px';
+  tip.style.top=top+'px';
+}
+function hideTip(){const tip=document.getElementById('chart-tooltip');if(tip)tip.style.display='none';}
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('svg[data-cid]'))hideTip();});
+
+// ── ZOOM CHARTS — přiblížení konkrétního ROZSAHU DAT (jako na intervals.icu) ───
+// Dva prsty od sebe/k sobě (nebo kolečko myši) zúží/rozšíří zobrazený úsek dat;
+// osa X se vždy přepočítá jen pro aktuálně vybraný rozsah bodů.
+const _zoomCfg={};   // zid -> {type,fullData,keys,colors,H,unit,labels,maxPoints}
+const _zoomState={}; // zid -> {start,end} indexy do fullData
+
+function decimate(arr,maxPoints){
+  if(arr.length<=maxPoints)return arr;
+  const k=Math.ceil(arr.length/maxPoints);
+  return arr.filter((_,i)=>i%k===0);
+}
+function fmtRangeLabel(cfg,start,end){
+  const n=end-start+1,full=cfg.fullData.length;
+  if(n>=full)return `Celé období · ${full} bodů`;
+  const a=cfg.fullData[start]?.label||"",b=cfg.fullData[end]?.label||"";
+  return `${a} – ${b} · ${n} bodů`;
+}
+function renderZoomChart(zid){
+  const cfg=_zoomCfg[zid],st=_zoomState[zid];
+  const shown=decimate(cfg.fullData.slice(st.start,st.end+1),cfg.maxPoints);
+  const svg=cfg.type==="combo"?svgCombo(shown,cfg):svgLine(shown,cfg.keys,cfg.colors,cfg.H,cfg.unit,cfg.labels);
+  const el=document.getElementById("zc-"+zid);if(el)el.innerHTML=svg;
+  const rl=document.getElementById("zr-"+zid);if(rl)rl.textContent=fmtRangeLabel(cfg,st.start,st.end);
+}
+function zoomWrapLine(fullData,keys,colors,H,unit,labels,zid,maxPoints=90){
+  _zoomCfg[zid]={type:"line",fullData,keys,colors,H,unit,labels,maxPoints};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  const st=_zoomState[zid];
+  const svg=svgLine(decimate(fullData.slice(st.start,st.end+1),maxPoints),keys,colors,H,unit,labels);
+  return `<div class="chart-zoom" data-zid="${zid}">
+    <div id="zc-${zid}">${svg}</div>
+    <div class="zoom-ctrl">
+      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+    </div>
+    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
+  </div>`;
+}
+// ── KOMBINOVANÝ GRAF (výkon/TF/kadence/výška přeložené přes sebe, zapínatelné) ─
+function svgCombo(data,cfg){
+  const id="c"+(_chartId++);
+  const metrics=cfg.metrics.filter(m=>cfg.active.has(m.key));
+  _chartMeta[id]={type:"combo",data,metrics};
+  const W=CHART_W,p=CHART_PAD,H=cfg.H||190;
+  const cw=W-p.l-p.r,ch=H-p.t-p.b;
+  const px=i=>p.l+i/(data.length-1||1)*cw;
+  const norm=(v,key)=>{const r=cfg.metricRange[key],range=(r.max-r.min)||1;return (v-r.min)/range;};
+  const py=frac=>p.t+ch-frac*ch;
+  let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
+  const step=Math.max(1,Math.floor(data.length/6));
+  data.forEach((d,i)=>{if(i%step===0)s+=`<line x1="${px(i)}" y1="${p.t}" x2="${px(i)}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
+  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;}
+  data.forEach((d,i)=>{if(i%step===0)s+=`<text x="${px(i)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label}</text>`;});
+  metrics.forEach(m=>{
+    const pts=data.map((d,i)=>`${px(i)},${py(norm(d[m.key]||0,m.key))}`).join(" ");
+    s+=`<polyline points="${pts}" fill="none" stroke="${m.color}" stroke-width="2"/>`;
+  });
+  if(!metrics.length)s+=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#475569" font-size="11">Zapni alespoň jednu metriku níže</text>`;
+  return s+`</svg>`;
+}
+function comboWrapChart(fullData,metrics,zid,maxPoints=100){
+  const metricRange={};
+  metrics.forEach(m=>{const vals=fullData.map(d=>d[m.key]||0);metricRange[m.key]={min:Math.min(...vals),max:Math.max(...vals)};});
+  const prevActive=_zoomCfg[zid]&&_zoomCfg[zid].active;
+  const active=prevActive||new Set(metrics.map(m=>m.key));
+  _zoomCfg[zid]={type:"combo",fullData,metrics,metricRange,H:190,maxPoints,active};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  const st=_zoomState[zid];
+  const svg=svgCombo(decimate(fullData.slice(st.start,st.end+1),maxPoints),_zoomCfg[zid]);
+  const legend=metrics.map(m=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${active.has(m.key)?m.color:"#475569"};margin-right:14px;margin-bottom:6px;cursor:pointer">
+    <input type="checkbox" ${active.has(m.key)?"checked":""} onchange="toggleComboSeries('${zid}','${m.key}')" style="accent-color:${m.color};width:14px;height:14px">${m.label}
+  </label>`).join("");
+  return `<div id="combo-legend-${zid}" style="margin-bottom:6px">${legend}</div>
+  <div class="chart-zoom" data-zid="${zid}">
+    <div id="zc-${zid}">${svg}</div>
+    <div class="zoom-ctrl">
+      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+    </div>
+    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
+  </div>`;
+}
+function toggleComboSeries(zid,key){
+  const cfg=_zoomCfg[zid];
+  if(!cfg)return;
+  if(cfg.active.has(key))cfg.active.delete(key);else cfg.active.add(key);
+  renderZoomChart(zid);
+  const m=cfg.metrics.find(x=>x.key===key);
+  const lbl=event.currentTarget.closest("label");
+  if(lbl&&m)lbl.style.color=cfg.active.has(key)?m.color:"#475569";
+}
+function setWindowRaw(zid,start,end){
+  const cfg=_zoomCfg[zid],N=cfg.fullData.length;
+  let L=Math.max(3,Math.min(N-1,end-start));
+  let s=start,e=start+L;
+  if(s<0){e-=s;s=0;}
+  if(e>N-1){s-=(e-(N-1));e=N-1;}
+  s=Math.max(0,Math.round(s));e=Math.min(N-1,Math.round(e));
+  if(e<=s)e=Math.min(N-1,s+3);
+  _zoomState[zid]={start:s,end:e};
+  renderZoomChart(zid);
+}
+function zoomStep(zid,factor){
+  const st=_zoomState[zid],mid=(st.start+st.end)/2,L=(st.end-st.start)*factor;
+  setWindowRaw(zid,mid-L/2,mid+L/2);
+}
+function zoomResetRange(zid){
+  const cfg=_zoomCfg[zid];
+  _zoomState[zid]={start:0,end:cfg.fullData.length-1};
+  renderZoomChart(zid);
+}
+function clientXToFrac(zid,clientX){
+  const svgEl=document.querySelector(`#zc-${zid} svg`);
+  if(!svgEl)return 0.5;
+  const rect=svgEl.getBoundingClientRect();
+  const p=CHART_PAD,W=CHART_W;
+  const relX=(clientX-rect.left)/rect.width*W;
+  return Math.max(0,Math.min(1,(relX-p.l)/(W-p.l-p.r)));
+}
+function screenXToIndex(zid,clientX){
+  const st=_zoomState[zid];
+  return st.start+clientXToFrac(zid,clientX)*(st.end-st.start);
+}
+function initChartZoom(){
+  document.querySelectorAll(".chart-zoom").forEach(box=>{
+    if(box._zoomInit)return;box._zoomInit=true;
+    const zid=box.dataset.zid;
+    const pts={};let pinch=null,pan=null;
+    box.addEventListener("pointerdown",e=>{
+      pts[e.pointerId]={x:e.clientX,y:e.clientY};
+      const ids=Object.keys(pts);
+      if(ids.length===2){
+        pan=null;
+        ids.forEach(id=>{try{box.setPointerCapture(Number(id));}catch(err){}});
+        const p2=ids.map(id=>pts[id]);
+        pinch={ia:screenXToIndex(zid,p2[0].x),ib:screenXToIndex(zid,p2[1].x)};
+      }else if(ids.length===1){
+        const st=_zoomState[zid],cfg=_zoomCfg[zid];
+        if(st.end-st.start<cfg.fullData.length-1){
+          try{box.setPointerCapture(e.pointerId);}catch(err){}
+          pan={startAt:st.start,endAt:st.end,lastX:e.clientX};
+        }
+      }
+    });
+    box.addEventListener("pointermove",e=>{
+      if(!pts[e.pointerId])return;
+      pts[e.pointerId]={x:e.clientX,y:e.clientY};
+      const ids=Object.keys(pts);
+      if(ids.length===2&&pinch){
+        const p2=ids.map(id=>pts[id]);
+        const fracA=clientXToFrac(zid,p2[0].x),fracB=clientXToFrac(zid,p2[1].x);
+        if(Math.abs(fracA-fracB)>0.02){
+          const L=(pinch.ia-pinch.ib)/(fracA-fracB);
+          const newStart=pinch.ia-fracA*L;
+          setWindowRaw(zid,newStart,newStart+L);
+        }
+      }else if(ids.length===1&&pan){
+        const svgEl=document.querySelector(`#zc-${zid} svg`);
+        const rect=svgEl?svgEl.getBoundingClientRect():box.getBoundingClientRect();
+        const p=CHART_PAD,W=CHART_W;
+        const plotFracW=(W-p.l-p.r)/W;
+        const L=pan.endAt-pan.startAt;
+        const dx=e.clientX-pan.lastX;
+        const idxDelta=-(dx/rect.width)*(L/plotFracW);
+        setWindowRaw(zid,pan.startAt+idxDelta,pan.endAt+idxDelta);
+      }
+    });
+    const endPtr=e=>{
+      delete pts[e.pointerId];
+      const ids=Object.keys(pts);
+      pinch=null;
+      if(ids.length===1){
+        const st=_zoomState[zid],cfg=_zoomCfg[zid];
+        pan=(st.end-st.start<cfg.fullData.length-1)?{startAt:st.start,endAt:st.end,lastX:pts[ids[0]].x}:null;
+      }else pan=null;
+    };
+    box.addEventListener("pointerup",endPtr);
+    box.addEventListener("pointercancel",endPtr);
+    box.addEventListener("pointerleave",e=>{if(Object.keys(pts).length<2)endPtr(e);});
+    box.addEventListener("wheel",e=>{
+      e.preventDefault();
+      const st=_zoomState[zid];
+      const anchorIdx=screenXToIndex(zid,e.clientX);
+      const frac=clientXToFrac(zid,e.clientX);
+      const factor=e.deltaY<0?0.8:1.25;
+      const L=(st.end-st.start)*factor;
+      const newStart=anchorIdx-frac*L;
+      setWindowRaw(zid,newStart,newStart+L);
+    },{passive:false});
+  });
+}
+
 function infoBtn(key){return `<button class="info-btn" onclick="toggleInfo('${key}')">i</button>`;}
-function infoBox(key){return `<div class="info-box" id="info-${key}">${INFO[key]||""}</div>`;}
+function infoBtnMini(key){return `<button class="info-btn-mini" onclick="event.stopPropagation();toggleInfo('${key}')">i</button>`;}
+function infoBox(key,ctx){const v=INFO[key];const html=typeof v==="function"?v(ctx||{}):v;return `<div class="info-box" id="info-${key}">${html||""}</div>`;}
+function renderSimBanner(){
+  if(S.ftpMode!=="manual")return "";
+  return `<div style="background:#2a1500;border:1px solid #854d0e;border-radius:8px;padding:8px 10px;margin-bottom:12px;font-size:12px;color:#fbbf24;display:flex;align-items:center;gap:8px;justify-content:space-between">
+    <span>🧪 Simulace aktivní — čísla NEJSOU reálná data ze Strava (FTP ${S.ftp}W ručně)</span>
+    <button onclick="setFtpMode('auto')" style="background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:11px;padding:4px 8px;cursor:pointer;white-space:nowrap">↩ Vrátit</button>
+  </div>`;
+}
 function toggleInfo(key){const el=document.getElementById("info-"+key);if(el)el.classList.toggle("open");}
 
 function noData(){return `<div class="card" style="text-align:center;padding:40px 20px">
@@ -369,22 +898,23 @@ function noData(){return `<div class="card" style="text-align:center;padding:40p
 const TABS=["forma","power","jizdy","tf","plan","treninky","ai","admin"];
 function showTab(tab){
   currentTab=tab;
+  localStorage.setItem("cyc_tab",tab);
   TABS.forEach(t=>{const el=document.getElementById("nl-"+t);if(el){el.classList.toggle("active",t===tab);}});
   const c=document.getElementById("content");
   if(tab==="forma")c.innerHTML=renderForma();
   else if(tab==="power")c.innerHTML=renderPower();
-  else if(tab==="jizdy")c.innerHTML=renderJizdy();
+  else if(tab==="jizdy"){detailRideId=null;jizdyShown=30;c.innerHTML=renderJizdy();initJizdyScroll();}
   else if(tab==="tf")c.innerHTML=renderTF();
   else if(tab==="plan")c.innerHTML=renderPlan();
   else if(tab==="treninky")c.innerHTML=renderTreninky();
   else if(tab==="ai")c.innerHTML=renderAI();
   else if(tab==="admin"){c.innerHTML=renderAdmin();}
+  initChartZoom();
 }
 
 // ── FORMA ─────────────────────────────────────────────────────────────────────
 function renderForma(){
   if(!FITNESS.length)return noData();
-  const s=FITNESS.filter((_,i)=>i%Math.max(1,Math.floor(FITNESS.length/80))===0);
   const tsb=LATEST.tsb,tc=tsb>5?"#34d399":tsb>-10?"#fbbf24":"#ef4444";
   const tl=tsb>5?"Svěží":tsb>-10?"Neutrální":"Unavený";
   const tm=tsb<-10?"⚠️ Přidej regeneraci.":tsb>10?"✅ Ideální na intenzitu.":"→ Trénuj opatrně.";
@@ -392,13 +922,13 @@ function renderForma(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">CTL / ATL — Forma & Únava</div><div class="card-sub">Modrá = základ 42d · Oranžová = únava 7d</div></div>${infoBtn("ctl")}</div>
     ${infoBox("ctl")}
-    ${svgLine(s,["ctl","atl"],["#38bdf8","#fb923c"])}
+    ${zoomWrapLine(FITNESS,["ctl","atl"],["#38bdf8","#fb923c"],160,"",["Forma (CTL)","Únava (ATL)"],"forma-ctl")}
     <div style="display:flex;gap:16px;margin-top:4px"><span style="font-size:11px;color:#38bdf8">● CTL Forma</span><span style="font-size:11px;color:#fb923c">● ATL Únava</span></div>
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">TSB — Svěžest</div><div class="card-sub"><span style="color:#34d399">Zelená >5</span>: svěží · <span style="color:#fbbf24">Žlutá</span>: neutrální · <span style="color:#ef4444">&lt;-10</span>: unavený</div></div>${infoBtn("tsb")}</div>
     ${infoBox("tsb")}
-    ${svgLine(s,["tsb"],["#a78bfa"],140)}
+    ${zoomWrapLine(FITNESS,["tsb"],["#a78bfa"],140,"",["TSB"],"forma-tsb")}
     <div class="alert" style="background:#0f172a;border:1px solid #334155;margin-top:8px">
       <span style="color:${tc};font-weight:700">TSB: ${tsb} — ${tl}</span>
       <span style="color:#64748b;margin-left:8px">${tm}</span>
@@ -409,11 +939,9 @@ function renderForma(){
 // ── POWER ─────────────────────────────────────────────────────────────────────
 function renderPower(){
   if(!RIDES.length)return noData();
-  const ftp=S.ftp,zones=getZones(ftp),mx=Math.round(ftp*1.5);
+  const ftp=getCurrentFtp(),zones=getZones(ftp),mx=Math.round(ftp*1.5);
   const topW=RIDES.filter(r=>r.watts>0).map(r=>r.watts);
   const best=topW.length?Math.max(...topW):ftp;
-  const pcData=["5s","15s","30s","1min","2min","5min","10min","20min","30min","1hod"]
-    .map((l,i)=>({d:l,w:Math.round(best*Math.pow(0.96,i))}));
   const zonesHTML=zones.map(z=>{
     const left=(z.min/mx)*100;
     const w=((Math.min(z.max===9999?mx:z.max,mx)/mx)*100)-left;
@@ -423,28 +951,26 @@ function renderPower(){
       <div class="zone-name">${z.n}</div>
       <div class="zone-range">${z.min}–${z.max===9999?"∞":z.max}W</div>
     </div>`;}).join("");
+  const peaks=computeAutoFtpPeaks();
   return `
-  <div class="card">
-    <div class="card-header"><div><div class="card-title">Power Curve</div><div class="card-sub">Odhad z nejlepšího výkonu jízd · FTP ${ftp}W</div></div>${infoBtn("power")}</div>
-    ${infoBox("power")}
-    ${svgBar(pcData,"w","#38bdf8",160,ftp)}
-  </div>
+  ${renderSimBanner()}
+  ${renderPowerCurveTable()}
   <div class="card">
     <div class="card-header"><div class="card-title">Výkonnostní zóny · FTP ${ftp}W</div>${infoBtn("zones")}</div>
     ${infoBox("zones")}
     <div style="margin-top:8px">${zonesHTML}</div>
   </div>
   <div class="card">
-    <div class="card-header"><div class="card-title">FTP Trend 2026</div>${infoBtn("ftp")}</div>
+    <div class="card-header"><div class="card-title">FTP Trend (auto ze Strava)</div>${infoBtn("ftp")}</div>
     ${infoBox("ftp")}
-    <div style="margin-top:10px">
-      ${[{l:"Est. Leden",f:228,d:"2026-01-15"},{l:"Ramp Test Březen",f:238,d:"2026-03-24"},{l:"Ramp Test Červen",f:245,d:"2026-06-10"},{l:"Est. Červenec",f:248,d:"2026-07-14"}]
-      .map((e,i,arr)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<arr.length-1?"1px solid #334155":"none"}">
+    <div style="font-size:11px;color:#64748b;margin:2px 0 8px">Detekováno jen z jízd, které v názvu odpovídají klíčovým slovům pro FTP test (nastavíš v Adminu) + případné ruční záznamy. Běžné jízdy se nepočítají.</div>
+    <div style="margin-top:6px">
+      ${peaks.map((e,i,arr)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<arr.length-1?"1px solid #334155":"none"}">
         <div style="width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0"></div>
-        <div style="flex:1"><div style="font-size:13px;font-weight:600">${e.l}</div><div style="font-size:10px;color:#64748b">${e.d}</div></div>
-        <div style="font-size:18px;font-weight:800;color:#a78bfa">${e.f}W</div>
-        ${i>0?`<div style="font-size:11px;font-weight:700;color:#34d399">+${e.f-arr[i-1].f}W</div>`:""}
-      </div>`).join("")}
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l}${e.refined?"":' <span style="color:#fbbf24;font-weight:400">(hrubý odhad)</span>'}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
+        <div style="font-size:18px;font-weight:800;color:#a78bfa">${e.refined?"":"≈"}${e.f}W</div>
+        ${i>0?`<div style="font-size:11px;font-weight:700;color:${e.f-arr[i-1].f>=0?"#34d399":"#ef4444"}">${e.f-arr[i-1].f>=0?"+":""}${e.f-arr[i-1].f}W</div>`:""}
+      </div>`).join("")||`<div style="font-size:12px;color:#64748b;text-align:center;padding:10px">Zatím žádný detekovaný test. Jízda musí mít v názvu klíčové slovo (viz Admin) a naměřený výkon. Zkontroluj klíčová slova nebo přidej ruční záznam v Adminu.</div>`}
     </div>
   </div>
   <div class="card">
@@ -458,44 +984,91 @@ function renderPower(){
 }
 
 // ── JÍZDY ─────────────────────────────────────────────────────────────────────
-function renderJizdy(){
-  if(!RIDES.length)return noData();
-  const ftp=S.ftp;
-  return `<div style="font-size:12px;color:#64748b;margin-bottom:8px">Posledních 20 jízd · klikni pro detail</div>`+
-  RIDES.slice(0,20).map(r=>{
-    const z=getZone(r.watts||0),sel=selRide===r.id;
-    const detail=sel?`<div style="margin-top:8px;padding:8px 10px;background:#0f172a;border-radius:8px">
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:6px">
-        W/bpm: <span style="color:#38bdf8;font-weight:700">${r.hr>0?(r.watts/r.hr).toFixed(2):"–"}</span>
-        &nbsp;· Intenzita: <span style="color:${z.c};font-weight:700">${ftp>0?Math.round(r.watts/ftp*100):"-"}% FTP</span>
-        &nbsp;· TSS: <span style="color:#a78bfa;font-weight:700">${r.tss}</span>
-        ${r.prs>0?`&nbsp;· 🏆 ${r.prs} PR`:""}
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:10px;color:#475569">ID: ${r.id}</span>
-        <button class="copy-id" onclick="copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})">📋 Kopírovat pro AI</button>
-        <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
-      </div>
-    </div>`:"";
-    return `<div class="ride" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div style="flex:1;min-width:0"><div class="ride-name">${r.name}</div><div class="ride-meta">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div></div>
-        <div style="text-align:right;flex-shrink:0;margin-left:8px"><div style="font-size:14px;font-weight:700;color:${z.c}">${r.watts>0?r.watts+"W":"–"}</div><div style="font-size:9px;color:#64748b">${z.n}</div></div>
-      </div>
-      <div class="ride-stats">
-        <span class="ride-stat">📍 ${r.km.toFixed(0)}km</span>
-        <span class="ride-stat">⏱ ${Math.round(r.dur/60)}min</span>
-        <span class="ride-stat">⛰ ${r.elev}m</span>
-        ${r.hr>0?`<span class="ride-stat">❤️ ${r.hr}bpm</span>`:""}
-        <span class="ride-stat">🔥 ${r.tss}TSS</span>
-        ${r.prs>0?`<span class="ride-stat">🏆 ${r.prs}PR</span>`:""}
-      </div>
-      ${detail}
-    </div>`;
-  }).join("");
+function renderRideCard(r){
+  const ftp=getEffectiveFtpAtDate(r.date);
+  const tss=effectiveTss(r);
+  const z=getZone(r.watts||0,ftp),sel=selRide===r.id;
+  const detail=sel?`<div style="margin-top:8px;padding:8px 10px;background:#0f172a;border-radius:8px">
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:6px">
+      W/bpm: <span style="color:#38bdf8;font-weight:700">${r.hr>0?(r.watts/r.hr).toFixed(2):"–"}</span>
+      &nbsp;· Intenzita: <span style="color:${z.c};font-weight:700">${ftp>0?Math.round(r.watts/ftp*100):"-"}% FTP</span>
+      &nbsp;· TSS: <span style="color:#a78bfa;font-weight:700">${tss}</span>
+      ${r.prs>0?`&nbsp;· 🏆 ${r.prs} PR`:""}
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:10px;color:#475569">ID: ${r.id}</span>
+      <button class="copy-id" onclick="event.stopPropagation();openRideDetail('${r.id}')" style="color:#34d399;border-color:#15803d">📊 Detail jízdy</button>
+      <button class="copy-id" onclick="event.stopPropagation();copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${tss},${r.km})">📋 Kopírovat pro AI</button>
+      <button class="copy-id" onclick="event.stopPropagation();addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
+    </div>
+  </div>`:"";
+  return `<div class="ride" id="ride-${r.id}" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="flex:1;min-width:0"><div class="ride-name">${r.name}</div><div class="ride-meta">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div></div>
+      <div style="text-align:right;flex-shrink:0;margin-left:8px"><div style="font-size:14px;font-weight:700;color:${z.c}">${r.watts>0?r.watts+"W":"–"}</div><div style="font-size:9px;color:#64748b">${z.n}</div></div>
+    </div>
+    <div class="ride-stats">
+      <span class="ride-stat">📍 ${r.km.toFixed(0)}km</span>
+      <span class="ride-stat">⏱ ${Math.round(r.dur/60)}min</span>
+      <span class="ride-stat">⛰ ${r.elev}m</span>
+      ${r.hr>0?`<span class="ride-stat">❤️ ${r.hr}bpm</span>`:""}
+      <span class="ride-stat">🔥 ${tss}TSS</span>
+      ${r.prs>0?`<span class="ride-stat">🏆 ${r.prs}PR</span>`:""}
+    </div>
+    ${detail}
+  </div>`;
 }
 
-function toggleRide(id){selRide=selRide===id?null:id;if(currentTab==="jizdy")document.getElementById("content").innerHTML=renderJizdy();}
+function jizdyFooterHTML(shown){
+  return shown<RIDES.length
+    ?`<div id="jizdy-sentinel" style="padding:16px;text-align:center;color:#64748b;font-size:12px">⏳ Načítám další jízdy…</div>`
+    :`<div id="jizdy-sentinel-done" style="padding:16px;text-align:center;color:#475569;font-size:11px">Zobrazeny všechny jízdy (${RIDES.length})</div>`;
+}
+
+// Full render - used only when the tab is freshly opened
+function renderJizdy(){
+  if(!RIDES.length)return noData();
+  const shown=Math.min(jizdyShown,RIDES.length);
+  return renderSimBanner()+
+  `<div style="font-size:12px;color:#64748b;margin-bottom:8px" id="jizdy-count">Zobrazeno ${shown} z ${RIDES.length} jízd · klikni pro detail</div>`+
+  `<div id="jizdy-list">${RIDES.slice(0,shown).map(renderRideCard).join("")}</div>`+
+  jizdyFooterHTML(shown);
+}
+
+// Scroll-triggered load: appends only the new batch of cards, doesn't touch existing DOM nodes
+function loadMoreJizdy(){
+  if(jizdyShown>=RIDES.length)return;
+  const prevShown=jizdyShown;
+  jizdyShown=Math.min(jizdyShown+30,RIDES.length);
+  if(currentTab!=="jizdy")return;
+  const list=document.getElementById("jizdy-list");
+  const oldSentinel=document.getElementById("jizdy-sentinel");
+  if(!list){document.getElementById("content").innerHTML=renderJizdy();initJizdyScroll();return;}
+  const newCardsHTML=RIDES.slice(prevShown,jizdyShown).map(renderRideCard).join("");
+  list.insertAdjacentHTML("beforeend",newCardsHTML);
+  if(oldSentinel)oldSentinel.outerHTML=jizdyFooterHTML(jizdyShown);
+  const countEl=document.getElementById("jizdy-count");
+  if(countEl)countEl.textContent=`Zobrazeno ${jizdyShown} z ${RIDES.length} jízd · klikni pro detail`;
+  initJizdyScroll();
+}
+
+function initJizdyScroll(){
+  const sentinel=document.getElementById("jizdy-sentinel");
+  if(jizdyObserver){jizdyObserver.disconnect();jizdyObserver=null;}
+  if(!sentinel)return;
+  jizdyObserver=new IntersectionObserver(entries=>{
+    if(entries[0].isIntersecting)loadMoreJizdy();
+  },{root:null,rootMargin:"300px"});
+  jizdyObserver.observe(sentinel);
+}
+
+function toggleRide(id){
+  selRide=selRide===id?null:id;
+  if(currentTab!=="jizdy")return;
+  const el=document.getElementById("ride-"+id);
+  const r=RIDES.find(x=>x.id===id);
+  if(el&&r)el.outerHTML=renderRideCard(r);
+}
 
 function copyId(id,name,date,watts,hr,tss,km){
   const txt=`Jízda ID:${id} | ${name} | ${date} | ${watts}W | TF:${hr}bpm | TSS:${tss} | ${km}km`;
@@ -518,14 +1091,226 @@ function addToAI(id,name,date,watts,hr,tss,km){
 
 function removeAIRide(id){aiRideCtx=aiRideCtx.filter(r=>r.id!==id);const el=document.getElementById("ai-ctx-info");if(el)el.innerHTML=aiRideCtx.map(r=>`<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">🚴 ${r.name} (${r.date}) <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button></span>`).join("");}
 
+// ── DETAIL JÍZDY (časová osa, výkon/TF/kadence/výška, zóny, best efforty) ──────
+function fmtClock(totalSec){
+  totalSec=Math.max(0,Math.round(totalSec||0));
+  const h=Math.floor(totalSec/3600),m=Math.floor((totalSec%3600)/60),s=totalSec%60;
+  return h>0?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;
+}
+function getRideStreams(id){return rideStreamsCache[id]||null;}
+function trimRideStreamsCache(){
+  const keys=Object.keys(rideStreamsCache);
+  if(keys.length>60){keys.slice(0,keys.length-40).forEach(k=>delete rideStreamsCache[k]);}
+}
+function saveRideStreams(id,data){
+  rideStreamsCache[id]=data;
+  try{localStorage.setItem("cyc_ride_streams",JSON.stringify(rideStreamsCache));}
+  catch(e){trimRideStreamsCache();try{localStorage.setItem("cyc_ride_streams",JSON.stringify(rideStreamsCache));}catch(e2){}}
+}
+async function fetchRideStreamsFromStrava(token,ride){
+  const url=`https://www.strava.com/api/v3/activities/${ride.id}/streams?keys=time,watts,heartrate,cadence,altitude&key_by_type=true&resolution=medium`;
+  const res=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
+  if(res.status===429){const err=new Error("rate_limited");err.rateLimited=true;throw err;}
+  if(!res.ok)return null;
+  const d=await res.json();
+  const pick=k=>d[k]&&d[k].data?d[k].data:null;
+  const time=pick("time");
+  if(!time||!time.length)return null;
+  return {t:time,w:pick("watts"),hr:pick("heartrate"),cad:pick("cadence"),alt:pick("altitude"),fetchedAt:Date.now()};
+}
+function buildStreamSeries(sd){
+  const t=sd.t||[],n=t.length;
+  const w=sd.w||[],hr=sd.hr||[],cad=sd.cad||[],alt=sd.alt||[];
+  const arr=new Array(n);
+  for(let i=0;i<n;i++)arr[i]={label:fmtClock(t[i]),t:t[i],w:w[i]||0,hr:hr[i]||0,cad:cad[i]||0,alt:alt[i]||0};
+  return arr;
+}
+function calcNP(wArr,dt){
+  if(!wArr||!wArr.length)return 0;
+  const winN=Math.max(1,Math.round(30/(dt||1)));
+  let sum=0,sumQ=0;
+  for(let i=0;i<wArr.length;i++){
+    sum+=wArr[i];
+    if(i>=winN)sum-=wArr[i-winN];
+    const cnt=Math.min(i+1,winN);
+    const avg=sum/cnt;
+    sumQ+=Math.pow(avg,4);
+  }
+  return Math.round(Math.pow(sumQ/wArr.length,0.25));
+}
+function calcZoneTime(wArr,dt,ftp){
+  const zones=getZones(ftp||getCurrentFtp());
+  const secs=zones.map(()=>0);
+  wArr.forEach(w=>{
+    let idx=zones.findIndex(z=>w>=z.min&&w<z.max);
+    if(idx<0)idx=zones.length-1;
+    secs[idx]+=(dt||1);
+  });
+  const total=secs.reduce((a,b)=>a+b,0)||1;
+  return zones.map((z,i)=>({...z,sec:secs[i],pct:Math.round(secs[i]/total*100)}));
+}
+function calcBestEfforts(id,wArr,dt,durationSec){
+  const cached=pcCache()[id];
+  return PC_DURATIONS.filter(pd=>Number(pd.k)<=durationSec+5).map(pd=>{
+    if(cached&&cached[pd.k])return {l:pd.l,v:cached[pd.k]};
+    const n=Math.max(1,Math.round(Number(pd.k)/(dt||1)));
+    return {l:pd.l,v:Math.round(maxAvgWindow(wArr,n))};
+  });
+}
+function renderRideDetailShell(r,msg){
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <button onclick="closeRideDetail()" style="background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:14px;padding:6px 12px;cursor:pointer">← Zpět</button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</div>
+      <div style="font-size:10px;color:#64748b">${r.date}</div>
+    </div>
+  </div>
+  <div class="card" style="text-align:center;padding:30px 16px;color:#94a3b8;font-size:13px">${msg}</div>`;
+}
+function renderRideDetail(r,sd){
+  const series=buildStreamSeries(sd);
+  const n=series.length;
+  const dt=n>1?(series[n-1].t-series[0].t)/(n-1):1;
+  const wArr=series.map(s=>s.w);
+  const hasPower=sd.w&&sd.w.some(v=>v>0);
+  const hasHR=sd.hr&&sd.hr.some(v=>v>0);
+  const hasCad=sd.cad&&sd.cad.some(v=>v>0);
+  const hasAlt=sd.alt&&sd.alt.length>1;
+  const ftpAtRide=getEffectiveFtpAtDate(r.date);
+  const tss=effectiveTss(r);
+  const np=hasPower?calcNP(wArr,dt):0;
+  const ifactor=(hasPower&&ftpAtRide>0)?(np/ftpAtRide):0;
+  const vi=(hasPower&&r.watts>0)?(np/r.watts):0;
+  const maxHR=hasHR?Math.max(...sd.hr):0;
+  const zoneTimes=hasPower?calcZoneTime(wArr,dt,ftpAtRide):[];
+  const bestEfforts=hasPower?calcBestEfforts(r.id,wArr,dt,r.dur):[];
+  const eff=(hasPower&&r.hr>0)?(r.watts/r.hr).toFixed(2):"–";
+  const comboMetrics=[];
+  if(hasPower)comboMetrics.push({key:"w",label:"Výkon",color:"#a78bfa",unit:"W"});
+  if(hasHR)comboMetrics.push({key:"hr",label:"Tep. frekvence",color:"#ef4444",unit:"bpm"});
+  if(hasCad)comboMetrics.push({key:"cad",label:"Kadence",color:"#38bdf8",unit:"rpm"});
+  if(hasAlt)comboMetrics.push({key:"alt",label:"Výška",color:"#94a3b8",unit:"m"});
+  return `
+  ${renderSimBanner()}
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <button onclick="closeRideDetail()" style="background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:14px;padding:6px 12px;cursor:pointer">← Zpět</button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</div>
+      <div style="font-size:10px;color:#64748b">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div>
+    </div>
+    <a href="https://www.strava.com/activities/${r.id}" target="_blank" rel="noopener" style="font-size:10px;color:#fc4c02;text-decoration:none;border:1px solid #7c2d12;border-radius:6px;padding:5px 8px;white-space:nowrap;flex-shrink:0">Strava ↗</a>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="margin-bottom:8px">Souhrn</div>
+    <div class="grid2">
+      <div class="kpi-box"><div class="kpi-box-label">Vzdálenost</div><div class="kpi-box-val" style="color:#38bdf8">${r.km.toFixed(1)}km</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Doba</div><div class="kpi-box-val" style="color:#38bdf8">${fmtClock(r.dur)}</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Převýšení</div><div class="kpi-box-val" style="color:#94a3b8">${r.elev}m</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Kalorie</div><div class="kpi-box-val" style="color:#fbbf24">${r.kcal||"–"}</div></div>
+    </div>
+  </div>
+
+  ${comboMetrics.length>1?`<div class="card">
+    <div class="card-header"><div class="card-title">Kombinovaný graf</div>${infoBtn("rideCombo")}</div>
+    ${infoBox("rideCombo")}
+    <div style="margin-top:8px">${comboWrapChart(series,comboMetrics,"rd-combo-"+r.id)}</div>
+  </div>`:""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Výkon</div>
+    <div class="grid2">
+      <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#a78bfa">${r.watts}W</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideNP")}<div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideIF")}<div class="kpi-box-label">IF (NP/FTP ${ftpAtRide}W)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideVI")}<div class="kpi-box-label">Variabilita (VI)</div><div class="kpi-box-val" style="color:#38bdf8">${vi.toFixed(2)}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideTSS")}<div class="kpi-box-label">TSS</div><div class="kpi-box-val" style="color:#fbbf24">${tss}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideWtep")}<div class="kpi-box-label">W/tep</div><div class="kpi-box-val" style="color:#34d399">${eff}</div></div>
+    </div>
+    ${infoBox("rideNP")}${infoBox("rideIF")}${infoBox("rideVI")}${infoBox("rideTSS")}${infoBox("rideWtep",{ftp:ftpAtRide})}
+  </div>`:""}
+
+  ${hasHR?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Tepová frekvence</div>
+    <div class="grid2" style="margin-bottom:10px">
+      <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#ef4444">${r.hr}bpm</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Max</div><div class="kpi-box-val" style="color:#ef4444">${maxHR}bpm</div></div>
+    </div>
+    ${zoomWrapLine(series,["hr"],["#ef4444"],150,"bpm",["Tep. frekvence"],"rd-hr-"+r.id)}
+  </div>`:""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Výkon v čase</div>
+    ${zoomWrapLine(series,["w"],["#a78bfa"],170,"W",["Výkon"],"rd-w-"+r.id)}
+  </div>`:""}
+
+  ${hasCad?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Kadence</div>
+    ${zoomWrapLine(series,["cad"],["#38bdf8"],140,"rpm",["Kadence"],"rd-cad-"+r.id)}
+  </div>`:""}
+
+  ${hasAlt?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Nadmořská výška</div>
+    ${zoomWrapLine(series,["alt"],["#94a3b8"],130,"m",["Výška"],"rd-alt-"+r.id)}
+  </div>`:""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Rozložení zón (tato jízda) · FTP ${ftpAtRide}W</div>
+    <div style="margin-top:8px">${zoneTimes.map(z=>`<div class="bar-wrap">
+      <div class="zone-lbl" style="color:${z.c}">${z.z}</div>
+      <div class="bar-bg"><div class="bar-fill" style="left:0;width:${z.pct}%;background:${z.c}"></div></div>
+      <div class="zone-name">${z.n}</div>
+      <div class="zone-range">${z.pct}% · ${Math.round(z.sec/60)}min</div>
+    </div>`).join("")}</div>
+  </div>` : ""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Nejlepší výkony v jízdě</div>
+    ${bestEfforts.map(b=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #334155;font-size:12px">
+      <span style="color:#94a3b8">${b.l}</span><span style="font-weight:700;color:#a78bfa">${b.v}W</span>
+    </div>`).join("")}
+  </div>`:""}
+
+  <div class="card">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
+    </div>
+  </div>`;
+}
+async function openRideDetail(id){
+  detailRideId=id;
+  const r=RIDES.find(x=>x.id===id);
+  if(!r)return;
+  const content=document.getElementById("content");
+  content.innerHTML=renderRideDetailShell(r,"⏳ Načítám detailní data z Strava…");
+  window.scrollTo(0,0);
+  let sd=getRideStreams(id);
+  if(!sd){
+    const token=await getToken();
+    if(!token){content.innerHTML=renderRideDetailShell(r,"❌ Přihlas se přes Strava v sekci Admin pro stažení detailu.");return;}
+    try{
+      sd=await fetchRideStreamsFromStrava(token,r);
+      if(sd)saveRideStreams(id,sd);
+    }catch(e){
+      if(e&&e.rateLimited){content.innerHTML=renderRideDetailShell(r,"⚠️ Strava API dočasně omezilo počet požadavků. Zkus to za pár minut.");return;}
+      content.innerHTML=renderRideDetailShell(r,"❌ Nepodařilo se stáhnout detail jízdy.");return;
+    }
+  }
+  if(!sd){content.innerHTML=renderRideDetailShell(r,"🔶 Pro tuto jízdu nejsou k dispozici detailní data (chybí senzor nebo je Strava nemá).");return;}
+  if(detailRideId!==id)return; // uživatel mezitím odešel z detailu
+  content.innerHTML=renderRideDetail(r,sd);
+  initChartZoom();
+}
+function closeRideDetail(){detailRideId=null;showTab("jizdy");}
+
 // ── TF ────────────────────────────────────────────────────────────────────────
 function renderTF(){
   if(!RIDES.length)return noData();
-  const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80).slice(0,40).reverse()
-    .map(r=>({label:r.date.slice(5),ratio:+(r.watts/r.hr).toFixed(2)}));
+  const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80).slice().reverse()
+    .map(r=>({label:fmtD(r.date),ratio:+(r.watts/r.hr).toFixed(2)}));
   const weekVol={};
   RIDES.forEach(r=>{const d=new Date(r.date);d.setDate(d.getDate()-d.getDay());const wk=d.toISOString().slice(0,10);weekVol[wk]=(weekVol[wk]||0)+Math.round(r.dur/3600*10)/10;});
-  const wkData=Object.entries(weekVol).sort((a,b)=>a[0]>b[0]?1:-1).slice(-16).map(([d,h])=>({label:d.slice(5),h}));
+  const wkData=Object.entries(weekVol).sort((a,b)=>a[0]>b[0]?1:-1).slice(-16).map(([d,h])=>({label:fmtD(d),h}));
   const avgHr=Math.round(RIDES.filter(r=>r.hr>0).reduce((s,r)=>s+r.hr,0)/Math.max(1,RIDES.filter(r=>r.hr>0).length));
   const totalH=Math.round(RIDES.reduce((s,r)=>s+r.dur,0)/3600);
   const totalElev=Math.round(RIDES.reduce((s,r)=>s+r.elev,0)/1000);
@@ -533,12 +1318,12 @@ function renderTF(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">Poměr W/bpm</div><div class="card-sub">Aerobní efektivita · trend ↑ = lepší kondice</div></div>${infoBtn("ratio")}</div>
     ${infoBox("ratio")}
-    ${svgLine(hrData,["ratio"],["#34d399"],150)}
+    ${zoomWrapLine(hrData,["ratio"],["#34d399"],150,"%",["Efektivita"],"tf-ratio")}
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">Týdenní objem (hod)</div><div class="card-sub">Posledních 16 týdnů</div></div>${infoBtn("volume")}</div>
     ${infoBox("volume")}
-    ${svgBar(wkData,"h","#38bdf8",150)}
+    ${svgBar(wkData,"h","#38bdf8",150,null,"h","")}
   </div>
   <div class="card">
     <div class="grid2">
@@ -557,21 +1342,20 @@ function renderPlan() {
 
   // Build rich context for coach
   const last14 = RIDES.slice(0,10).map(r=>
-    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W avg":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${r.tss} | ${r.km}km | ${r.elev}m elev${r.prs>0?" | "+r.prs+" PR":""}`
+    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W avg":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${r.km}km | ${r.elev}m elev${r.prs>0?" | "+r.prs+" PR":""}`
   ).join("\n");
 
-  const totalTssWeek = RIDES.filter(r=>{const d=new Date(r.date);const now=new Date();return(now-d)<7*24*3600*1000;}).reduce((s,r)=>s+r.tss,0);
-  const totalTss2week = RIDES.filter(r=>{const d=new Date(r.date);const now=new Date();return(now-d)<14*24*3600*1000;}).reduce((s,r)=>s+r.tss,0);
+  const totalTssWeek = RIDES.filter(r=>{const d=new Date(r.date);const now=new Date();return(now-d)<7*24*3600*1000;}).reduce((s,r)=>s+effectiveTss(r),0);
+  const totalTss2week = RIDES.filter(r=>{const d=new Date(r.date);const now=new Date();return(now-d)<14*24*3600*1000;}).reduce((s,r)=>s+effectiveTss(r),0);
 
   return `
   <div class="card" style="background:linear-gradient(135deg,#0f1f3d,#1e293b);border-color:#1e40af">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
       <span style="font-size:28px">🏋️</span>
-      <div style="flex:1">
+      <div>
         <div style="font-size:16px;font-weight:800;color:#38bdf8">Trenérský Briefing</div>
         <div style="font-size:11px;color:#64748b">AI analýza formy + doporučení na 7 dní</div>
       </div>
-      <button class="btn sync-btn" onclick="syncPlanFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
     </div>
 
     <div class="grid2" style="margin-bottom:12px">
@@ -607,13 +1391,19 @@ function renderPlan() {
   </div>`;
 }
 
+function cleanAIText(text){
+  // levný model občas vyplivne náhodný cizí znak (CJK) uprostřed české věty – ořízneme
+  return String(text).replace(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g,"").replace(/\r/g,"");
+}
+function mdBold(line){return line.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>");}
+
 function extractWorkouts(text){
-  const m = text.match(/===WORKOUTS_JSON===([\s\S]*?)===END_WORKOUTS_JSON===/);
+  const m=String(text).match(/===WORKOUTS_JSON===([\s\S]*?)===END_WORKOUTS_JSON===/);
   if(!m) return {text, workouts:null};
-  const cleanText = text.replace(m[0],"").trim();
+  const cleanText=text.replace(m[0],"").trim();
   try{
-    const parsed = JSON.parse(m[1].trim());
-    const withIds = parsed.map((w,i)=>({id:"w_"+Date.now()+"_"+i, createdAt:new Date().toISOString(), ...w}));
+    const parsed=JSON.parse(m[1].trim());
+    const withIds=parsed.map((w,i)=>({id:"w_"+Date.now()+"_"+i, createdAt:new Date().toISOString(), ...w}));
     return {text:cleanText, workouts:withIds};
   }catch(e){
     return {text:cleanText, workouts:null};
@@ -621,20 +1411,35 @@ function extractWorkouts(text){
 }
 
 function renderPlanOutput(text) {
-  // Parse sections and style them
-  const lines = text.split("\n");
-  let html = '<div style="margin-top:4px">';
-  lines.forEach(line => {
-    if(line.startsWith("1.") || line.startsWith("📊")) {
-      html+=`<div style="background:#0c1929;border-left:3px solid #38bdf8;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#38bdf8;margin-bottom:4px">📊 AKTUÁLNÍ STAV</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^1\.\s*📊.*?:\s*/,"").replace(/^📊\s*AKTUÁLNÍ STAV.*?:\s*/,"")}</div></div>`;
-    } else if(line.startsWith("2.") || line.startsWith("📅")) {
-      html+=`<div style="background:#0a1f0a;border-left:3px solid #34d399;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#34d399;margin-bottom:4px">📅 PLÁN NA 7 DNÍ</div>`;
-    } else if(line.startsWith("3.") || line.startsWith("🎯")) {
-      html+=`</div><div style="background:#1a0f00;border-left:3px solid #fbbf24;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#fbbf24;margin-bottom:4px">🎯 PRIORITA TÝDNE</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^3\.\s*🎯.*?:\s*/,"").replace(/^🎯\s*PRIORITA.*?:\s*/,"")}</div></div>`;
-    } else if(line.startsWith("4.") || line.startsWith("⚠️")) {
-      html+=`<div style="background:#1a0808;border-left:3px solid #ef4444;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#ef4444;margin-bottom:4px">⚠️ POZOR</div><div style="font-size:12px;color:#e2e8f0;line-height:1.6">${line.replace(/^4\.\s*⚠️.*?:\s*/,"").replace(/^⚠️\s*NA CO.*?:\s*/,"")}</div></div>`;
-    } else if(line.trim()) {
-      html+=`<div style="font-size:12px;color:#e2e8f0;line-height:1.7;padding:1px 0">${line}</div>`;
+  text=cleanAIText(text);
+  const lines=text.split("\n").map(l=>l.trim()).filter(l=>l.length);
+  let html='<div style="margin-top:4px">';
+  lines.forEach(line=>{
+    const headingMatch=line.match(/^\*\*(.+?)\*\*:?\s*$/);
+    const dayMatch=line.match(/^\d+[\.\)]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const boldBulletMatch=line.match(/^[*\-]\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const plainBulletMatch=line.match(/^[*\-]\s+(.*)$/);
+    if(headingMatch){
+      const title=headingMatch[1].replace(/:$/,"");
+      const low=title.toLowerCase();
+      let icon="📌",color="#94a3b8";
+      if(low.includes("stav")){icon="📊";color="#38bdf8";}
+      else if(low.includes("doporuč")||low.includes("plán")||low.includes("týden")){icon="📅";color="#34d399";}
+      else if(low.includes("pozor")||low.includes("varov")||low.includes("riziko")){icon="⚠️";color="#ef4444";}
+      else if(low.includes("priorit")||low.includes("cíl")){icon="🎯";color="#fbbf24";}
+      html+=`<div style="display:flex;align-items:center;gap:6px;margin:16px 0 8px;font-size:12px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.3px">${icon} ${title}</div>`;
+    } else if(dayMatch || boldBulletMatch){
+      const m=dayMatch||boldBulletMatch;
+      const label=m[1];
+      const rest=mdBold(m[2]);
+      html+=`<div style="background:#0f172a;border:1px solid #1e293b;border-left:3px solid #38bdf8;border-radius:0 10px 10px 0;padding:10px 12px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:#38bdf8;margin-bottom:4px">📌 ${label}</div>
+        <div style="font-size:12px;color:#cbd5e1;line-height:1.6">${rest}</div>
+      </div>`;
+    } else if(plainBulletMatch){
+      html+=`<div style="display:flex;gap:8px;font-size:12px;color:#e2e8f0;line-height:1.6;padding:2px 0 2px 4px"><span style="color:#64748b">•</span><span>${mdBold(plainBulletMatch[1])}</span></div>`;
+    } else {
+      html+=`<div style="font-size:12px;color:#e2e8f0;line-height:1.7;padding:2px 0">${mdBold(line)}</div>`;
     }
   });
   html+="</div>";
@@ -648,20 +1453,20 @@ async function loadPlan() {
   if(btn){btn.textContent="⏳ Trenér analyzuje data...";btn.style.background="#334155";}
 
   const last10=RIDES.slice(0,10).map(r=>
-    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${r.tss} | ${r.km}km | ${r.elev}m${r.prs>0?" | "+r.prs+"PR":""}`
+    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${r.km}km | ${r.elev}m${r.prs>0?" | "+r.prs+"PR":""}`
   ).join("\n");
 
-  const totalTssWeek=RIDES.filter(r=>(new Date()-new Date(r.date))<7*24*3600*1000).reduce((s,r)=>s+r.tss,0);
-  const totalTss2w=RIDES.filter(r=>(new Date()-new Date(r.date))<14*24*3600*1000).reduce((s,r)=>s+r.tss,0);
+  const totalTssWeek=RIDES.filter(r=>(new Date()-new Date(r.date))<7*24*3600*1000).reduce((s,r)=>s+effectiveTss(r),0);
+  const totalTss2w=RIDES.filter(r=>(new Date()-new Date(r.date))<14*24*3600*1000).reduce((s,r)=>s+effectiveTss(r),0);
   const avgHrLast5=Math.round(RIDES.slice(0,5).filter(r=>r.hr>0).reduce((s,r)=>s+r.hr,0)/Math.max(1,RIDES.slice(0,5).filter(r=>r.hr>0).length));
+  const curFtp=getCurrentFtp();
 
   const prompt=`PROFIL SPORTOVCE:
 Jméno: ${S.name}
-Váha: ${S.weight}kg | FTP: ${S.ftp}W | W/kg: ${(S.ftp/S.weight).toFixed(2)}
+Váha: ${S.weight}kg | FTP: ${curFtp}W | W/kg: ${(curFtp/S.weight).toFixed(2)}
 Max TF: ${S.maxHr}bpm | Klidová TF: ${S.restHr}bpm
 Cíl: ${S.goal}
 Zdravotní poznámky: ${S.notes||"žádné"}
-Časová kapacita: max ${S.weeklyHours||8}h týdně na trénink celkem (nerozepisuj podle konkrétních dnů)
 
 AKTUÁLNÍ FORMA:
 CTL (forma 42d): ${LATEST.ctl}
@@ -682,16 +1487,17 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
-    const ans=data.content?.[0]?.text||"Chyba odpovědi.";
+    const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
     const {text:cleanText,workouts}=extractWorkouts(ans);
     if(workouts&&workouts.length){
       TRAINING_PLANS=workouts;
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
     }
     planCache=cleanText;
+    localStorage.setItem("cyc_plan",JSON.stringify(cleanText));
+    syncToCloud();
     const out=document.getElementById("plan-output");
     if(out)out.innerHTML=renderPlanOutput(cleanText)+(workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:8px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:"");
-    savePlanToCloud(cleanText,workouts||[]);
   }catch(e){
     const out=document.getElementById("plan-output");
     if(out)out.innerHTML=`<div style="color:#ef4444;font-size:12px;padding:10px">❌ Chyba: ${e.message}</div>`;
@@ -700,42 +1506,9 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
   if(btn){btn.textContent="🔄 Obnovit doporučení";btn.style.background="linear-gradient(135deg,#1e40af,#1e3a8a)";}
 }
 
-// ── CLOUD SYNC (Cloudflare KV) — sdílení plánu mezi zařízeními ─────────────────
-async function savePlanToCloud(text,workouts){
-  if(!S.workerUrl)return;
-  try{
-    await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"save_plan",data:{text,workouts,savedAt:new Date().toISOString()}})});
-  }catch(e){ /* tichý fail - appka funguje i bez cloud sync */ }
-}
-
-let syncing=false;
-async function syncPlanFromCloud(){
-  if(syncing||!S.workerUrl)return;
-  syncing=true;
-  const btns=document.querySelectorAll(".sync-btn");
-  btns.forEach(b=>{b.textContent="⏳ Synchronizuji...";b.disabled=true;});
-  try{
-    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"get_plan"})});
-    const data=await res.json();
-    if(data.plan){
-      planCache=data.plan.text||null;
-      TRAINING_PLANS=data.plan.workouts||[];
-      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
-      showTab(currentTab==="treninky"?"treninky":"plan");
-    }else{
-      alert("V cloudu zatím není žádný uložený plán.");
-    }
-  }catch(e){
-    alert("Synchronizace selhala: "+e.message);
-  }
-  syncing=false;
-}
-
 // ── TRÉNINKY (strukturované workouty od trenéra) ───────────────────────────────
 function ftpPctToWatts(pctStr){
-  const ftp=S.ftp;
+  const ftp=getCurrentFtp();
   const nums=(String(pctStr).match(/\d+(\.\d+)?/g)||[]).map(Number);
   if(!nums.length) return "";
   if(nums.length===1) return `${Math.round(ftp*nums[0]/100)}W`;
@@ -759,6 +1532,7 @@ function toggleWorkout(id){
 function deleteWorkout(id){
   TRAINING_PLANS=TRAINING_PLANS.filter(w=>w.id!==id);
   localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+  syncToCloud();
   showTab("treninky");
 }
 
@@ -766,6 +1540,7 @@ function clearAllWorkouts(){
   if(!confirm("Smazat všechny uložené tréninky?"))return;
   TRAINING_PLANS=[];
   localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+  syncToCloud();
   showTab("treninky");
 }
 
@@ -774,10 +1549,10 @@ function renderTreninky(){
     return `<div class="card" style="text-align:center;padding:40px 20px">
       <div style="font-size:40px;margin-bottom:12px">🏋️</div>
       <div style="font-size:16px;font-weight:700;margin-bottom:8px">Zatím žádné tréninky</div>
-      <div style="font-size:13px;color:#64748b;margin-bottom:16px">Nech trenéra sestavit plán v záložce 📅 Plán — jednotlivé tréninky se pak objeví tady se strukturou pro Zwift/Garmin. Pokud jsi plán už vytvořil na jiném zařízení, zkus synchronizaci.</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:16px">Nech trenéra sestavit plán v záložce 📅 Plán nebo 🤖 AI — jednotlivé tréninky se pak objeví tady se strukturou pro Zwift/Garmin. Pokud jsi plán vytvořil na jiném zařízení, zkus synchronizaci.</div>
       <div style="display:flex;gap:8px">
         <button class="btn" onclick="showTab('plan')" style="background:#1e40af;flex:1">📅 Přejít na Plán</button>
-        <button class="btn sync-btn" onclick="syncPlanFromCloud()" style="background:#334155;flex:1">🔄 Synchronizovat</button>
+        <button class="btn" onclick="syncFromCloud()" style="background:#334155;flex:1">🔄 Synchronizovat</button>
       </div>
     </div>`;
   }
@@ -823,9 +1598,9 @@ function renderTreninky(){
       <span style="font-size:28px">🏋️</span>
       <div style="flex:1">
         <div style="font-size:16px;font-weight:800;color:#a78bfa">Uložené tréninky</div>
-        <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} tréninků od trenéra · watty přepočtené na aktuální FTP ${S.ftp}W</div>
+        <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} tréninků od trenéra · watty přepočtené na aktuální FTP ${getCurrentFtp()}W</div>
       </div>
-      <button class="btn sync-btn" onclick="syncPlanFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
+      <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
     </div>
   </div>
   ${cards}
@@ -838,12 +1613,12 @@ function renderTreninky(){
 
 // ── AI TRENÉR ─────────────────────────────────────────────────────────────────
 function buildCoachSystemPrompt(includeWorkoutSchema){
-  const wh = S.weeklyHours || 8;
-  const timeGuidance = wh >= 10
+  const wh=S.weeklyHours||8;
+  const timeGuidance = wh>=10
     ? `Sportovec má ${wh}h/týden — dostatečný objem na to, aby polarizovaný poměr 80/20 (Seiler) dával smysl doslovně.`
-    : `Sportovec má jen ${wh}h/týden. DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu. NEPTEJ SE na konkrétní dny v týdnu — pracuj jen s celkovou týdenní hodinovou kapacitou.`;
+    : `Sportovec má jen ${wh}h/týden. DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu.`;
 
-  let prompt = `Jsi EliteCoach — expertní cyklistický trenér s hlubokou znalostí sportovní fyziologie a periodizace. Vycházíš z těchto vědecky podložených principů:
+  let prompt=`Jsi EliteCoach — expertní cyklistický trenér s hlubokou znalostí sportovní fyziologie a periodizace. Vycházíš z těchto vědecky podložených principů:
 
 FYZIOLOGIE A TRÉNINKOVÉ ZÓNY:
 - FTP (Functional Threshold Power) = maximální udržitelný výkon po dobu 1 hodiny
@@ -881,13 +1656,13 @@ SPECIFIKA CYKLISTIKY:
 
 ODPOVÍDEJ VŽDY:
 1. Krátké shrnutí aktuálního stavu (2-3 věty)
-2. Konkrétní doporučení na tréninky příštího týdne (typ tréninku, watty, délka) tak, aby celkový součet nepřekročil ${wh}h. Sestav je jako POŘADÍ "Den 1, Den 2, Den 3..." až "Den 7" — u KAŽDÉHO dne uveď buď konkrétní trénink, nebo "volno" / "aktivní regenerace", podle toho, jak potřebuje tělo zotavit po předchozí zátěži (nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — pouze "Den 1"–"Den 7", protože sportovec si je sám namapuje na svůj kalendář.
+2. Konkrétní doporučení sestavené jako POŘADÍ "Den 1" až "Den 7" (u KAŽDÉHO dne uveď buď konkrétní trénink s wattami a délkou, nebo "volno"/"aktivní regenerace" — nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). Celkový součet tréninkových hodin nesmí překročit ${wh}h. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7", sportovec si je sám namapuje na svůj kalendář.
 3. Proč — fyziologické zdůvodnění
 4. Na co si dát pozor
 Odpovídej v češtině, stručně ale konkrétně. Watty vždy uváděj jako % FTP i absolutní hodnotu.`;
 
   if(includeWorkoutSchema){
-    prompt += `
+    prompt+=`
 
 DODATEČNĚ: Za celou textovou odpověď PŘIDEJ blok se strukturovanými tréninky ve formátu níže. Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
 
@@ -920,21 +1695,23 @@ Vygeneruj JEDEN objekt v poli pro každý navržený trénink z bodu 2 výše (n
 
 function buildAthleteContext(days=14){
   const recent=RIDES.slice(0,days);
-  const totalTSS=recent.reduce((s,r)=>s+r.tss,0);
+  const totalTSS=recent.reduce((s,r)=>s+effectiveTss(r),0);
   const avgWatts=Math.round(recent.filter(r=>r.watts>0).reduce((s,r)=>s+r.watts,0)/Math.max(1,recent.filter(r=>r.watts>0).length));
   const avgHR=Math.round(recent.filter(r=>r.hr>0).reduce((s,r)=>s+r.hr,0)/Math.max(1,recent.filter(r=>r.hr>0).length));
   const totalHours=Math.round(recent.reduce((s,r)=>s+r.dur,0)/360)/10;
   const zwiftCount=recent.filter(r=>r.type==="VirtualRide").length;
   const outdoorCount=recent.filter(r=>r.type==="Ride").length;
   const today=new Date().toLocaleDateString("cs-CZ",{weekday:"long",day:"numeric",month:"long"});
+  const curFtp=getCurrentFtp();
   return `Datum: ${today}
-Sportovec: ${S.name}, ${S.weight}kg, FTP ${S.ftp}W (${(S.ftp/S.weight).toFixed(2)} W/kg)
+Sportovec: ${S.name}, ${S.weight}kg, FTP ${curFtp}W (${(curFtp/S.weight).toFixed(2)} W/kg)
 Forma (CTL): ${LATEST.ctl} | Únava (ATL): ${LATEST.atl} | Svěžest (TSB): ${LATEST.tsb}
 Tréninkový cíl: ${S.goal}
 Zdravotní stav: ${S.notes||"bez omezení"}
+Časová kapacita: max ${S.weeklyHours||8}h týdně na trénink celkem
 
 Posledních ${days} jízd (TSS celkem: ${totalTSS}, ${totalHours}h, průměr ${avgWatts}W, průměr TF ${avgHR}bpm, Zwift: ${zwiftCount}x, venkovní: ${outdoorCount}x):
-${recent.map(r=>`• ${r.date} [${r.type==="VirtualRide"?"Zwift":"Venkovní"}] ${r.name}: ${r.watts}W avg, TF ${r.hr}bpm, ${Math.round(r.dur/60)}min, ${r.km}km, TSS ${r.tss}${r.prs>0?`, ${r.prs} PR`:""}`).join("\n")}`;
+${recent.map(r=>`• ${r.date} [${r.type==="VirtualRide"?"Zwift":"Venkovní"}] ${r.name}: ${r.watts}W avg, TF ${r.hr}bpm, ${Math.round(r.dur/60)}min, ${r.km}km, TSS ${effectiveTss(r)}${r.prs>0?`, ${r.prs} PR`:""}`).join("\n")}`;
 }
 
 function renderAI(){
@@ -946,30 +1723,10 @@ function renderAI(){
     </span>`).join("")}</div>`:`<div id="ai-ctx-info"></div>`;
 
   return `
-  <div class="card" style="background:linear-gradient(135deg,#0c1f3d,#1e293b);border-color:#1e40af">
-    <div style="font-size:15px;font-weight:800;color:#38bdf8;margin-bottom:4px">📅 Denní doporučení trenéra</div>
-    <div style="font-size:11px;color:#64748b;margin-bottom:12px">
-      AI přečte posledních 14 jízd, CTL/ATL/TSB a tvé cíle → sestaví plán na příští dny.
-    </div>
-    <div style="background:#0a1628;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11px;color:#94a3b8">
-      <div style="color:#38bdf8;font-weight:700;margin-bottom:4px">📊 Aktuální stav</div>
-      CTL <span style="color:#38bdf8;font-weight:700">${LATEST.ctl}</span> &nbsp;·&nbsp;
-      ATL <span style="color:#fb923c;font-weight:700">${LATEST.atl}</span> &nbsp;·&nbsp;
-      TSB <span style="color:${LATEST.tsb>5?"#34d399":LATEST.tsb>-10?"#fbbf24":"#ef4444"};font-weight:700">${LATEST.tsb}</span>
-      &nbsp;·&nbsp; FTP <span style="color:#a78bfa;font-weight:700">${S.ftp}W</span>
-      <div style="margin-top:4px;color:#64748b">${S.notes||"Bez zdravotních omezení"}</div>
-    </div>
-    <button class="btn" id="coach-btn" onclick="askCoach()" style="width:100%;background:${workerSet?"linear-gradient(135deg,#1e40af,#7c3aed)":"#334155"};font-size:14px;padding:14px;${!workerSet?"cursor:not-allowed":""}"
-      ${!workerSet?"disabled":""}>
-      ${workerSet?"🧠 Sestavit plán na příští dny":"⚠️ Nastav Worker URL v Admin"}
-    </button>
-    <div id="coach-response"></div>
-  </div>
-
   <div class="card">
     <div style="font-size:15px;font-weight:800;color:#38bdf8;margin-bottom:4px">🤖 Volný dotaz</div>
     <div style="font-size:11px;color:#64748b;margin-bottom:10px">
-      FTP ${S.ftp}W · CTL ${LATEST.ctl} · ATL ${LATEST.atl} · TSB ${LATEST.tsb} · ${RIDES.length} jízd
+      FTP ${getCurrentFtp()}W · CTL ${LATEST.ctl} · ATL ${LATEST.atl} · TSB ${LATEST.tsb} · ${RIDES.length} jízd
     </div>
 
     ${!workerSet?`<div style="background:#1a0f00;border:1px solid #854d0e;border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:#fbbf24">
@@ -999,7 +1756,8 @@ function renderAI(){
   ${aiHistory.length>0?`<div class="card">
     <div style="font-size:14px;font-weight:700;margin-bottom:10px">📋 Historie</div>
     ${aiHistory.map((h,i)=>`
-      <div style="background:#0f172a;border-radius:8px;padding:10px;margin-bottom:6px;border:1px solid #1e293b">
+      <div style="position:relative;background:#0f172a;border-radius:8px;padding:10px 28px 10px 10px;margin-bottom:6px;border:1px solid #1e293b">
+        <button onclick="deleteAIItem(${i})" title="Smazat tuto položku" style="position:absolute;top:6px;right:6px;background:none;border:none;color:#64748b;font-size:14px;line-height:1;cursor:pointer;padding:2px 4px">✕</button>
         <div style="font-size:10px;color:#475569;margin-bottom:3px">🕐 ${h.ts} ${h.type==="coach"?'<span style="color:#7c3aed">· 📅 Plán</span>':""}</div>
         <div style="font-size:11px;color:#38bdf8;font-weight:600;margin-bottom:4px">❓ ${h.q}</div>
         <div style="font-size:11px;color:#94a3b8">${h.a.slice(0,300)}${h.a.length>300?"…":""}</div>
@@ -1024,16 +1782,23 @@ async function askCoach(){
   try{
     const res=await fetch(S.workerUrl,{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system:buildCoachSystemPrompt(false),messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
+      body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
     });
     const data=await res.json();
-    const ans=data.content?.[0]?.text||JSON.stringify(data);
+    const rawAns=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
+    const {text:ans,workouts}=extractWorkouts(rawAns);
+    if(workouts&&workouts.length){
+      TRAINING_PLANS=workouts;
+      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+    }
     const entry={q:"📅 Denní plán trenéra",a:ans,ts:new Date().toLocaleTimeString("cs-CZ"),type:"coach"};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
+    syncToCloud();
     if(rb)rb.innerHTML=`<div style="background:#0a1628;border:1px solid #1e40af;border-radius:10px;padding:16px;margin-top:12px">
       <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-4-6</div>
-      <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${ans}</div>
+      <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${mdBold(ans)}</div>
+      ${workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:10px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:""}
     </div>`;
   }catch(e){
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
@@ -1056,8 +1821,9 @@ async function askAI(){
   const ridesCtx=aiRideCtx.length>0
     ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km`).join("\n")
     : "";
-  const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${r.tss}`).join(" | ");
-  const ctx=`Sportovec: ${S.name}, ${S.weight}kg, FTP ${S.ftp}W (${(S.ftp/S.weight).toFixed(2)} W/kg). CTL=${LATEST.ctl}, ATL=${LATEST.atl}, TSB=${LATEST.tsb}. Jízd v databázi: ${RIDES.length}. Cíl: ${S.goal}. Zdravotní stav: ${S.notes}. Poslední jízdy: ${recent}${ridesCtx}`;
+  const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${effectiveTss(r)}`).join(" | ");
+  const curFtp=getCurrentFtp();
+  const ctx=`Sportovec: ${S.name}, ${S.weight}kg, FTP ${curFtp}W (${(curFtp/S.weight).toFixed(2)} W/kg). CTL=${LATEST.ctl}, ATL=${LATEST.atl}, TSB=${LATEST.tsb}. Jízd v databázi: ${RIDES.length}. Cíl: ${S.goal}. Zdravotní stav: ${S.notes}. Poslední jízdy: ${recent}${ridesCtx}`;
 
   try{
     const res=await fetch(S.workerUrl,{
@@ -1065,12 +1831,13 @@ async function askAI(){
       body:JSON.stringify({system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
     });
     const data=await res.json();
-    const ans=data.content?.[0]?.text||JSON.stringify(data);
+    const ans=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
     const entry={q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
+    syncToCloud();
     const rb=document.getElementById("ai-response");
-    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${ans}</div></div>`;
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${mdBold(ans)}</div></div>`;
   }catch(e){
     const rb=document.getElementById("ai-response");
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
@@ -1079,8 +1846,72 @@ async function askAI(){
   if(btn){btn.textContent="🤖 Zeptat se AI trenéra";btn.style.background="#1e40af";}
 }
 
-function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${aiHistory[i].a}</div></div>`;}
-function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");showTab("ai");}
+function showFullAI(i){const rb=document.getElementById("ai-response");if(rb&&aiHistory[i])rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${mdBold(aiHistory[i].a)}</div></div>`;}
+function clearAI(){aiHistory=[];localStorage.removeItem("cyc_ai");syncToCloud();showTab("ai");}
+function deleteAIItem(i){aiHistory.splice(i,1);localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));syncToCloud();showTab("ai");}
+
+// ── CLOUD SYNC (sdílení AI historie, nastavení a POWER CURVE cache mezi zařízeními) ──
+// Vyžaduje rozšířený Cloudflare Worker s KV úložištěm (viz worker.js šablona).
+// Pokud Worker sync ještě nepodporuje, volání jen tiše selže – appka funguje dál jen lokálně.
+// Power-curve cache se SLUČUJE (union podle activity id), ne přepisuje – takže když
+// spočítáš část jízd na PC a část na mobilu, obě sady se spojí a nic se neztratí.
+function mergeRemotePcCache(remotePc){
+  if(!remotePc)return false;
+  const local=pcCache();
+  let changed=false;
+  Object.keys(remotePc).forEach(id=>{if(!local[id]){local[id]=remotePc[id];changed=true;}});
+  if(changed)savePcCache(local);
+  return changed;
+}
+async function syncToCloud(){
+  if(!S.workerUrl)return;
+  const ts=Date.now();
+  try{
+    // nejdřív stáhni aktuální cloud stav a slouč power-curve cache, ať nepřepíšeme
+    // data spočtená mezitím na jiném zařízení
+    try{
+      const getRes=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"kv_get",key:"coach_sync"})});
+      const getData=await getRes.json().catch(()=>null);
+      if(getData&&getData.value&&getData.value.pcCache)mergeRemotePcCache(getData.value.pcCache);
+    }catch(e){}
+    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,workouts:TRAINING_PLANS,pcCache:pcCache(),ts}})});
+    const raw=await res.text();
+    if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
+    localStorage.setItem("cyc_ai_ts",String(ts));
+    setSyncBadge("✅ Sync OK (uloženo) · "+new Date(ts).toLocaleTimeString("cs-CZ"));
+  }catch(e){setSyncBadge("⚠️ Chyba při ukládání: "+e.message);}
+}
+
+async function syncFromCloud(silent){
+  if(!S.workerUrl)return;
+  try{
+    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"kv_get",key:"coach_sync"})});
+    const raw=await res.text();
+    if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
+    let data;
+    try{data=JSON.parse(raw);}catch(pe){throw new Error("Worker nevrátil JSON: "+raw.slice(0,150));}
+    const remote=data&&data.value;
+    if(!remote){if(!silent)setSyncBadge("☁️ Worker OK, ale zatím nic uloženo (zkus nejdřív uložit plán/nastavení)");return;}
+    // power-curve cache slučujeme vždy, bez ohledu na timestamp – je to čistě přírůstková data
+    const pcChanged=mergeRemotePcCache(remote.pcCache);
+    const localTs=Number(localStorage.getItem("cyc_ai_ts")||0);
+    if((remote.ts||0)>localTs){
+      if(remote.aiHistory){aiHistory=remote.aiHistory;localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));}
+      if(remote.settings){S={...S,...remote.settings,workerUrl:S.workerUrl};localStorage.setItem("cyc_s",JSON.stringify(S));}
+      if(remote.planCache){planCache=remote.planCache;localStorage.setItem("cyc_plan",JSON.stringify(planCache));}
+      if(remote.workouts){TRAINING_PLANS=remote.workouts;localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));}
+      localStorage.setItem("cyc_ai_ts",String(remote.ts));
+      recompute();updateHeader();
+      if(currentTab==="ai"||currentTab==="admin"||currentTab==="plan"||currentTab==="treninky")showTab(currentTab);
+    }
+    if(pcChanged&&currentTab==="power")showTab("power");
+    if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
+  }catch(e){if(!silent)setSyncBadge("⚠️ Chyba při stahování: "+e.message);}
+}
+function setSyncBadge(txt){const el=document.getElementById("sync-badge");if(el)el.textContent=txt;}
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 function renderAdmin(){
@@ -1111,6 +1942,10 @@ function renderAdmin(){
     <div class="field-label">Worker URL</div>
     <input id="worker-url" placeholder="https://xxx.workers.dev" value="${S.workerUrl||""}">
     <button class="btn" onclick="saveWorker()" style="background:#1e40af;margin-top:8px;width:100%">💾 Uložit Worker URL</button>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 10px">
+      <span style="font-size:11px;color:#64748b;flex:1" id="sync-badge">☁️ Sync mezi zařízeními zatím neproveden</span>
+      <button onclick="syncFromCloud()" style="background:#334155;color:#e2e8f0;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer">🔄 Sync teď</button>
+    </div>
     <div style="background:#0f172a;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#94a3b8;line-height:1.6">
       <strong style="color:#38bdf8">Jak nastavit Cloudflare Worker:</strong><br>
       1. Jdi na <strong>workers.cloudflare.com</strong> → přihlas se zdarma<br>
@@ -1125,38 +1960,154 @@ function renderAdmin(){
     <div class="grid2">
       <div>
         <div class="field-label">Jméno</div><input id="s-name" value="${S.name}">
-        <div class="field-label">FTP (W)</div><input id="s-ftp" type="number" value="${S.ftp}">
         <div class="field-label">Váha (kg)</div><input id="s-weight" type="number" value="${S.weight}">
       </div>
       <div>
         <div class="field-label">Max TF</div><input id="s-maxhr" type="number" value="${S.maxHr}">
         <div class="field-label">Klidová TF</div><input id="s-resthr" type="number" value="${S.restHr}">
-        <div style="background:#0f172a;border-radius:8px;padding:8px;margin-top:10px;font-size:11px;color:#64748b">
-          W/kg: <span style="color:#a78bfa;font-weight:700">${(S.ftp/S.weight).toFixed(2)}</span>
-        </div>
       </div>
+    </div>
+    <div style="background:#0f172a;border-radius:8px;padding:8px;margin-top:10px;font-size:11px;color:#64748b">
+      FTP: <span style="color:#a78bfa;font-weight:700">${getCurrentFtp()}W</span>${S.ftpMode==="manual"?" (simulace)":" (auto ze Strava)"} · W/kg: <span style="color:#a78bfa;font-weight:700">${(getCurrentFtp()/S.weight).toFixed(2)}</span> — FTP se nastavuje níže v sekci "Simulace FTP"
     </div>
     <div class="field-label">Tréninkový cíl</div><textarea id="s-goal" rows="2">${S.goal}</textarea>
     <div class="field-label">Zdravotní poznámky</div><textarea id="s-notes" rows="2">${S.notes}</textarea>
     <div class="field-label">Časová kapacita — max hodin týdně na trénink</div><input id="s-weeklyhours" type="number" step="0.5" value="${S.weeklyHours}">
-    <div style="font-size:10px;color:#64748b;margin-top:4px">Trenér přizpůsobí plán (délku a typ tréninků) tak, aby se vešel do tohoto objemu — bez ohledu na konkrétní dny.</div>
+    <div style="font-size:10px;color:#64748b;margin-top:4px">Trenér přizpůsobí typ a délku tréninků tomuto objemu (bez ohledu na konkrétní dny).</div>
     <div class="field-label">AI System Prompt</div><textarea id="s-prompt" rows="3">${S.sysPrompt}</textarea>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="btn" id="save-btn" onclick="saveSettings()" style="flex:1;background:#1e40af">💾 Uložit vše</button>
       <button class="btn" onclick="clearAllData()" style="background:#7f1d1d;font-size:11px">🗑 Reset</button>
     </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:#64748b">
+      <span>Cache detailů jízd: ${Object.keys(rideStreamsCache).length} jízd</span>
+      <button onclick="clearRideStreamsCache()" style="background:#0f172a;border:1px solid #334155;border-radius:6px;color:#94a3b8;font-size:10px;padding:4px 10px;cursor:pointer">Vymazat</button>
+    </div>
+  </div>
+
+  <div class="card" style="border-color:${S.ftpMode==="manual"?"#854d0e":"#334155"}">
+    <div style="font-size:15px;font-weight:800;color:#a78bfa;margin-bottom:4px">📈 FTP — auto ze Strava</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">FTP se počítá jen z jízd, které vypadají jako <strong>skutečný FTP test</strong> (podle klíčových slov v názvu) — běžné endurance/Zwift jízdy se do toho nepočítají, i kdyby měly slušný výkon. Detailní trend najdeš v záložce <strong>Power → FTP Trend</strong>.</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button onclick="setFtpMode('auto')" style="flex:1;background:${S.ftpMode==="auto"?"#1e40af":"#0f172a"};border:1px solid ${S.ftpMode==="auto"?"#1e40af":"#334155"};border-radius:8px;color:#e2e8f0;font-size:12px;font-weight:700;padding:8px;cursor:pointer">✅ Reálná data (auto)</button>
+      <button onclick="document.getElementById('sim-panel').style.display='block'" style="flex:1;background:${S.ftpMode==="manual"?"#854d0e":"#0f172a"};border:1px solid ${S.ftpMode==="manual"?"#854d0e":"#334155"};border-radius:8px;color:#e2e8f0;font-size:12px;font-weight:700;padding:8px;cursor:pointer">🧪 Simulace</button>
+    </div>
+    <div id="sim-panel" style="display:${S.ftpMode==="manual"?"block":"none"};background:#0f172a;border-radius:8px;padding:10px;margin-bottom:12px">
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Zkus si "co by bylo kdyby" — zadej hypotetické FTP a projeví se okamžitě napříč celou appkou (TSS, zóny, Forma, detail jízd). Nic se natrvalo nepřepíše.</div>
+      <div class="field-label">Hypotetické FTP (W)</div>
+      <input id="sim-ftp" type="number" value="${S.ftp}" placeholder="např. 270">
+      <button class="btn" onclick="applySimFtp()" style="background:#854d0e;margin-top:8px;width:100%">🧪 Aplikovat simulaci</button>
+      ${S.ftpMode==="manual"?`<button class="btn" onclick="setFtpMode('auto')" style="background:#334155;margin-top:8px;width:100%;font-size:12px">↩ Vrátit na reálná data ze Strava</button>`:""}
+    </div>
+
+    <div class="field-label">Klíčová slova pro detekci FTP testu v názvu jízdy</div>
+    <input id="s-ftpkw" value="${S.ftpTestKeywords}" placeholder="ramp,ftp test,ramp test,ftp ramp">
+    <button class="btn" onclick="saveFtpKeywords()" style="background:#1e40af;margin-top:8px;width:100%;font-size:12px">💾 Uložit klíčová slova</button>
+    <button class="btn" onclick="refineFtpTests()" style="background:#7c3aed;margin-top:8px;width:100%">🎯 Zpřesnit FTP testy (stáhne detailní data z nalezených jízd)</button>
+    <div style="font-size:10px;color:#475569;margin-top:6px">Bez zpřesnění appka u testu použije jen hrubý odhad z průměrného výkonu jízdy. Po zpřesnění spočítá skutečnou hodnotu z výkonové křivky (ramp test: 75 % nejlepšího 1min výkonu; klasický test: 95 % nejlepšího 20min výkonu).</div>
+
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #334155">
+      <div style="font-size:12px;font-weight:700;color:#a78bfa;margin-bottom:4px">✍️ Ruční změny FTP v čase</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Přidej FTP k libovolnému datu — výsledek testu odjinud (Garmin Connect a podobně), nebo prostě úprava po nemoci/pauze/zlepšení, kterou znáš a chceš, aby se od toho data reálně počítala. Klidně i směrem dolů. Kombinuje se s testy detekovanými ze Strava — vždy platí nejnovější záznam k danému datu (ruční i automatický), žádné "jen nahoru".</div>
+      <div id="ftp-manual-list">
+        ${(S.ftpManualEntries||[]).slice().sort((a,b)=>a.d.localeCompare(b.d)).map(e=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #334155">
+          <div style="width:7px;height:7px;border-radius:50%;background:#34d399;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l||"Ruční záznam"}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
+          <div style="font-size:14px;font-weight:800;color:#34d399;white-space:nowrap">${e.f}W</div>
+          <button onclick="removeFtpManualEntry('${e.d}',${e.f})" style="background:none;border:none;color:#64748b;font-size:13px;cursor:pointer;padding:2px 4px">✕</button>
+        </div>`).join("")||`<div style="font-size:11px;color:#64748b;text-align:center;padding:6px">Zatím žádné</div>`}
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <div><div class="field-label">Datum (od kdy platí)</div><input id="ftpm-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div><div class="field-label">FTP (W)</div><input id="ftpm-watts" type="number" placeholder="250"></div>
+      </div>
+      <div class="field-label">Popis</div><input id="ftpm-label" placeholder="např. Garmin Ramp Test / Po nemoci">
+      <button class="btn" onclick="addFtpManualEntry()" style="background:#166534;margin-top:8px;width:100%;font-size:12px">➕ Přidat záznam</button>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" onclick="fullResyncAll()" style="flex:1;background:#334155;font-size:12px">🔄 Kompletní resync (doplní chybějící data)</button>
+    </div>
+    <button class="btn" onclick="recalcTssFromAuto()" style="background:#334155;margin-top:8px;width:100%;font-size:12px">🔁 Přepočítat uložené TSS podle auto historie</button>
   </div>`;
 }
+function saveFtpKeywords(){
+  const v=document.getElementById("s-ftpkw")?.value?.trim();
+  S.ftpTestKeywords=v||"ramp,ftp test,ramp test,ftp ramp";
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
+}
+function addFtpManualEntry(){
+  const d=document.getElementById("ftpm-date")?.value;
+  const l=document.getElementById("ftpm-label")?.value?.trim()||"Ruční záznam";
+  const f=Number(document.getElementById("ftpm-watts")?.value);
+  if(!d||!f||f<=0){alert("Vyplň datum a watty.");return;}
+  S.ftpManualEntries=S.ftpManualEntries||[];
+  S.ftpManualEntries.push({l,f,d});
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
+}
+function removeFtpManualEntry(d,f){
+  if(!confirm("Smazat tento ruční záznam?"))return;
+  S.ftpManualEntries=(S.ftpManualEntries||[]).filter(e=>!(e.d===d&&Number(e.f)===Number(f)));
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  invalidateAutoFtpCache();
+  recompute();updateHeader();
+  showTab("admin");
+}
+function applySimFtp(){
+  const f=Number(document.getElementById("sim-ftp")?.value);
+  if(!f||f<=0){alert("Zadej platné FTP.");return;}
+  S.ftp=f;
+  S.ftpMode="manual";
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  recompute();updateHeader();
+  showTab("admin");
+}
+function recalcTssFromAuto(){
+  if(!confirm("Přepočítat uložené TSS u všech jízd podle auto-detekované historie FTP ze Strava?"))return;
+  invalidateAutoFtpCache();
+  let changed=0;
+  RIDES.forEach(r=>{
+    if(r.watts>0){
+      const ftpAt=getAutoFtpAtDate(r.date);
+      if(ftpAt>0){
+        const newTss=Math.round((r.dur/3600)*(r.watts/ftpAt)*(r.watts/ftpAt)*100);
+        if(newTss!==r.tss){r.tss=newTss;changed++;}
+      }
+    }
+  });
+  localStorage.setItem("cyc_rides",JSON.stringify(RIDES));
+  recompute();updateHeader();
+  showTab("admin");
+  setTimeout(()=>alert(`Hotovo — přepočítáno ${changed} jízd.`),50);
+}
+function clearRideStreamsCache(){rideStreamsCache={};localStorage.removeItem("cyc_ride_streams");showTab("admin");}
 
 function saveSecret(){const v=document.getElementById("secret-input")?.value?.trim();if(!v)return;localStorage.setItem("cyc_secret",v);showTab("admin");}
 function clearSecret(){if(confirm("Odhlásit Strava?")){["cyc_secret","cyc_token","cyc_refresh","cyc_token_exp"].forEach(k=>localStorage.removeItem(k));showTab("admin");}}
 async function forceSync(){const t=await getToken();if(t)await syncRides(t);else stravaLogin();}
+function setFtpMode(mode){
+  S.ftpMode=mode==="manual"?"manual":"auto";
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  recompute();updateHeader();
+  showTab(currentTab);
+}
+async function fullResyncAll(){
+  if(!confirm("Znovu stáhnout kompletní historii ze Strava? U starších jízd tím doplníš chybějící data (Normalized Power) potřebná pro přesný auto-výpočet FTP. Může to chvíli trvat."))return;
+  const t=await getToken();
+  if(!t){stravaLogin();return;}
+  invalidateAutoFtpCache();
+  await syncRides(t,true);
+}
 function saveWorker(){const v=document.getElementById("worker-url")?.value?.trim();S.workerUrl=v;localStorage.setItem("cyc_s",JSON.stringify(S));const btn=event.target;btn.textContent="✅ Uloženo!";setTimeout(()=>btn.textContent="💾 Uložit Worker URL",2000);}
 function saveSettings(){
   const gv=id=>document.getElementById(id)?.value??null;
-  const gn=id=>{ const v=Number(document.getElementById(id)?.value); return v>0?v:S[id.replace("s-","").replace("maxhr","maxHr").replace("resthr","restHr")]; };
   if(gv("s-name")!==null) S.name=gv("s-name")||S.name;
-  S.ftp=Number(gv("s-ftp"))||S.ftp;
   S.weight=Number(gv("s-weight"))||S.weight;
   S.maxHr=Number(gv("s-maxhr"))||S.maxHr;
   S.restHr=Number(gv("s-resthr"))||S.restHr;
@@ -1165,16 +2116,19 @@ function saveSettings(){
   S.weeklyHours=Number(gv("s-weeklyhours"))||S.weeklyHours;
   if(gv("s-prompt")!==null) S.sysPrompt=gv("s-prompt")||S.sysPrompt;
   localStorage.setItem("cyc_s",JSON.stringify(S));
+  syncToCloud();
   recompute();updateHeader();
   const btn=document.getElementById("save-btn");
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
 }
-function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};updateHeader();showTab("admin");}}
-const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",weeklyHours:8,sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:""};
+function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync","cyc_ride_streams","cyc_pc_cache"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};rideStreamsCache={};detailRideId=null;invalidateAutoFtpCache();updateHeader();showTab("admin");}}
+const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",weeklyHours:8,sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpMode:"auto",ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",ftpManualEntries:[]};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
-handleOAuth().then(was=>{if(!was)showTab("forma");});
+const savedTab=localStorage.getItem("cyc_tab")||"forma";
+handleOAuth().then(was=>{if(!was)showTab(savedTab);});
+syncFromCloud(true);
 </script>
 </body>
 </html>
