@@ -127,6 +127,8 @@ let currentTab="forma", selRide=null, aiLoading=false, planLoading=false;
 let jizdyShown=30, jizdyObserver=null;
 let aiRideCtx=[];
 let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
+let detailRideId=null;
+let rideStreamsCache=JSON.parse(localStorage.getItem("cyc_ride_streams")||"{}");
 
 // ── INFO TEXTS ────────────────────────────────────────────────────────────────
 const INFO = {
@@ -689,7 +691,7 @@ function showTab(tab){
   const c=document.getElementById("content");
   if(tab==="forma")c.innerHTML=renderForma();
   else if(tab==="power")c.innerHTML=renderPower();
-  else if(tab==="jizdy"){jizdyShown=30;c.innerHTML=renderJizdy();initJizdyScroll();}
+  else if(tab==="jizdy"){detailRideId=null;jizdyShown=30;c.innerHTML=renderJizdy();initJizdyScroll();}
   else if(tab==="tf")c.innerHTML=renderTF();
   else if(tab==="plan")c.innerHTML=renderPlan();
   else if(tab==="ai")c.innerHTML=renderAI();
@@ -779,8 +781,9 @@ function renderRideCard(r){
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <span style="font-size:10px;color:#475569">ID: ${r.id}</span>
-      <button class="copy-id" onclick="copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})">📋 Kopírovat pro AI</button>
-      <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
+      <button class="copy-id" onclick="event.stopPropagation();openRideDetail('${r.id}')" style="color:#34d399;border-color:#15803d">📊 Detail jízdy</button>
+      <button class="copy-id" onclick="event.stopPropagation();copyId('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})">📋 Kopírovat pro AI</button>
+      <button class="copy-id" onclick="event.stopPropagation();addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
     </div>
   </div>`:"";
   return `<div class="ride" id="ride-${r.id}" style="border-color:${sel?"#3b82f6":"#334155"};background:${sel?"#1e3a5f":"#1e293b"}" onclick="toggleRide('${r.id}')">
@@ -870,6 +873,203 @@ function addToAI(id,name,date,watts,hr,tss,km){
 }
 
 function removeAIRide(id){aiRideCtx=aiRideCtx.filter(r=>r.id!==id);const el=document.getElementById("ai-ctx-info");if(el)el.innerHTML=aiRideCtx.map(r=>`<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">🚴 ${r.name} (${r.date}) <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button></span>`).join("");}
+
+// ── DETAIL JÍZDY (časová osa, výkon/TF/kadence/výška, zóny, best efforty) ──────
+function fmtClock(totalSec){
+  totalSec=Math.max(0,Math.round(totalSec||0));
+  const h=Math.floor(totalSec/3600),m=Math.floor((totalSec%3600)/60),s=totalSec%60;
+  return h>0?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;
+}
+function getRideStreams(id){return rideStreamsCache[id]||null;}
+function trimRideStreamsCache(){
+  const keys=Object.keys(rideStreamsCache);
+  if(keys.length>60){keys.slice(0,keys.length-40).forEach(k=>delete rideStreamsCache[k]);}
+}
+function saveRideStreams(id,data){
+  rideStreamsCache[id]=data;
+  try{localStorage.setItem("cyc_ride_streams",JSON.stringify(rideStreamsCache));}
+  catch(e){trimRideStreamsCache();try{localStorage.setItem("cyc_ride_streams",JSON.stringify(rideStreamsCache));}catch(e2){}}
+}
+async function fetchRideStreamsFromStrava(token,ride){
+  const url=`https://www.strava.com/api/v3/activities/${ride.id}/streams?keys=time,watts,heartrate,cadence,altitude&key_by_type=true&resolution=medium`;
+  const res=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
+  if(res.status===429){const err=new Error("rate_limited");err.rateLimited=true;throw err;}
+  if(!res.ok)return null;
+  const d=await res.json();
+  const pick=k=>d[k]&&d[k].data?d[k].data:null;
+  const time=pick("time");
+  if(!time||!time.length)return null;
+  return {t:time,w:pick("watts"),hr:pick("heartrate"),cad:pick("cadence"),alt:pick("altitude"),fetchedAt:Date.now()};
+}
+function buildStreamSeries(sd){
+  const t=sd.t||[],n=t.length;
+  const w=sd.w||[],hr=sd.hr||[],cad=sd.cad||[],alt=sd.alt||[];
+  const arr=new Array(n);
+  for(let i=0;i<n;i++)arr[i]={label:fmtClock(t[i]),t:t[i],w:w[i]||0,hr:hr[i]||0,cad:cad[i]||0,alt:alt[i]||0};
+  return arr;
+}
+function calcNP(wArr,dt){
+  if(!wArr||!wArr.length)return 0;
+  const winN=Math.max(1,Math.round(30/(dt||1)));
+  let sum=0,sumQ=0;
+  for(let i=0;i<wArr.length;i++){
+    sum+=wArr[i];
+    if(i>=winN)sum-=wArr[i-winN];
+    const cnt=Math.min(i+1,winN);
+    const avg=sum/cnt;
+    sumQ+=Math.pow(avg,4);
+  }
+  return Math.round(Math.pow(sumQ/wArr.length,0.25));
+}
+function calcZoneTime(wArr,dt){
+  const zones=getZones(S.ftp);
+  const secs=zones.map(()=>0);
+  wArr.forEach(w=>{
+    let idx=zones.findIndex(z=>w>=z.min&&w<z.max);
+    if(idx<0)idx=zones.length-1;
+    secs[idx]+=(dt||1);
+  });
+  const total=secs.reduce((a,b)=>a+b,0)||1;
+  return zones.map((z,i)=>({...z,sec:secs[i],pct:Math.round(secs[i]/total*100)}));
+}
+function calcBestEfforts(id,wArr,dt,durationSec){
+  const cached=pcCache()[id];
+  return PC_DURATIONS.filter(pd=>Number(pd.k)<=durationSec+5).map(pd=>{
+    if(cached&&cached[pd.k])return {l:pd.l,v:cached[pd.k]};
+    const n=Math.max(1,Math.round(Number(pd.k)/(dt||1)));
+    return {l:pd.l,v:Math.round(maxAvgWindow(wArr,n))};
+  });
+}
+function renderRideDetailShell(r,msg){
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <button onclick="closeRideDetail()" style="background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:14px;padding:6px 12px;cursor:pointer">← Zpět</button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</div>
+      <div style="font-size:10px;color:#64748b">${r.date}</div>
+    </div>
+  </div>
+  <div class="card" style="text-align:center;padding:30px 16px;color:#94a3b8;font-size:13px">${msg}</div>`;
+}
+function renderRideDetail(r,sd){
+  const series=buildStreamSeries(sd);
+  const n=series.length;
+  const dt=n>1?(series[n-1].t-series[0].t)/(n-1):1;
+  const wArr=series.map(s=>s.w);
+  const hasPower=sd.w&&sd.w.some(v=>v>0);
+  const hasHR=sd.hr&&sd.hr.some(v=>v>0);
+  const hasCad=sd.cad&&sd.cad.some(v=>v>0);
+  const hasAlt=sd.alt&&sd.alt.length>1;
+  const np=hasPower?calcNP(wArr,dt):0;
+  const ifactor=(hasPower&&S.ftp>0)?(np/S.ftp):0;
+  const vi=(hasPower&&r.watts>0)?(np/r.watts):0;
+  const maxHR=hasHR?Math.max(...sd.hr):0;
+  const zoneTimes=hasPower?calcZoneTime(wArr,dt):[];
+  const bestEfforts=hasPower?calcBestEfforts(r.id,wArr,dt,r.dur):[];
+  const eff=(hasPower&&r.hr>0)?(r.watts/r.hr).toFixed(2):"–";
+  return `
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <button onclick="closeRideDetail()" style="background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:14px;padding:6px 12px;cursor:pointer">← Zpět</button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</div>
+      <div style="font-size:10px;color:#64748b">${r.date} · ${r.type==="VirtualRide"?"🖥 Zwift":"🌳 Venkovní"}</div>
+    </div>
+    <a href="https://www.strava.com/activities/${r.id}" target="_blank" rel="noopener" style="font-size:10px;color:#fc4c02;text-decoration:none;border:1px solid #7c2d12;border-radius:6px;padding:5px 8px;white-space:nowrap;flex-shrink:0">Strava ↗</a>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="margin-bottom:8px">Souhrn</div>
+    <div class="grid2">
+      <div class="kpi-box"><div class="kpi-box-label">Vzdálenost</div><div class="kpi-box-val" style="color:#38bdf8">${r.km.toFixed(1)}km</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Doba</div><div class="kpi-box-val" style="color:#38bdf8">${fmtClock(r.dur)}</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Převýšení</div><div class="kpi-box-val" style="color:#94a3b8">${r.elev}m</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Kalorie</div><div class="kpi-box-val" style="color:#fbbf24">${r.kcal||"–"}</div></div>
+    </div>
+  </div>
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Výkon</div>
+    <div class="grid2">
+      <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#a78bfa">${r.watts}W</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">IF (NP/FTP)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Variabilita (VI)</div><div class="kpi-box-val" style="color:#38bdf8">${vi.toFixed(2)}</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">TSS</div><div class="kpi-box-val" style="color:#fbbf24">${r.tss}</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">W/tep</div><div class="kpi-box-val" style="color:#34d399">${eff}</div></div>
+    </div>
+  </div>`:""}
+
+  ${hasHR?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Tepová frekvence</div>
+    <div class="grid2" style="margin-bottom:10px">
+      <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#ef4444">${r.hr}bpm</div></div>
+      <div class="kpi-box"><div class="kpi-box-label">Max</div><div class="kpi-box-val" style="color:#ef4444">${maxHR}bpm</div></div>
+    </div>
+    ${zoomWrapLine(series,["hr"],["#ef4444"],150,"bpm",["Tep. frekvence"],"rd-hr-"+r.id)}
+  </div>`:""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Výkon v čase</div>
+    ${zoomWrapLine(series,["w"],["#a78bfa"],170,"W",["Výkon"],"rd-w-"+r.id)}
+  </div>`:""}
+
+  ${hasCad?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Kadence</div>
+    ${zoomWrapLine(series,["cad"],["#38bdf8"],140,"rpm",["Kadence"],"rd-cad-"+r.id)}
+  </div>`:""}
+
+  ${hasAlt?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Nadmořská výška</div>
+    ${zoomWrapLine(series,["alt"],["#94a3b8"],130,"m",["Výška"],"rd-alt-"+r.id)}
+  </div>`:""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Rozložení zón (tato jízda)</div>
+    <div style="margin-top:8px">${zoneTimes.map(z=>`<div class="bar-wrap">
+      <div class="zone-lbl" style="color:${z.c}">${z.z}</div>
+      <div class="bar-bg"><div class="bar-fill" style="left:0;width:${z.pct}%;background:${z.c}"></div></div>
+      <div class="zone-name">${z.n}</div>
+      <div class="zone-range">${z.pct}% · ${Math.round(z.sec/60)}min</div>
+    </div>`).join("")}</div>
+  </div>` : ""}
+
+  ${hasPower?`<div class="card">
+    <div class="card-title" style="margin-bottom:8px">Nejlepší výkony v jízdě</div>
+    ${bestEfforts.map(b=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #334155;font-size:12px">
+      <span style="color:#94a3b8">${b.l}</span><span style="font-weight:700;color:#a78bfa">${b.v}W</span>
+    </div>`).join("")}
+  </div>`:""}
+
+  <div class="card">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="copy-id" onclick="addToAI('${r.id}','${r.name.replace(/'/g,"\\'")}','${r.date}',${r.watts},${r.hr},${r.tss},${r.km})" style="color:#38bdf8;border-color:#1e40af">🤖 Přidat do AI</button>
+    </div>
+  </div>`;
+}
+async function openRideDetail(id){
+  detailRideId=id;
+  const r=RIDES.find(x=>x.id===id);
+  if(!r)return;
+  const content=document.getElementById("content");
+  content.innerHTML=renderRideDetailShell(r,"⏳ Načítám detailní data z Strava…");
+  window.scrollTo(0,0);
+  let sd=getRideStreams(id);
+  if(!sd){
+    const token=await getToken();
+    if(!token){content.innerHTML=renderRideDetailShell(r,"❌ Přihlas se přes Strava v sekci Admin pro stažení detailu.");return;}
+    try{
+      sd=await fetchRideStreamsFromStrava(token,r);
+      if(sd)saveRideStreams(id,sd);
+    }catch(e){
+      if(e&&e.rateLimited){content.innerHTML=renderRideDetailShell(r,"⚠️ Strava API dočasně omezilo počet požadavků. Zkus to za pár minut.");return;}
+      content.innerHTML=renderRideDetailShell(r,"❌ Nepodařilo se stáhnout detail jízdy.");return;
+    }
+  }
+  if(!sd){content.innerHTML=renderRideDetailShell(r,"🔶 Pro tuto jízdu nejsou k dispozici detailní data (chybí senzor nebo je Strava nemá).");return;}
+  if(detailRideId!==id)return; // uživatel mezitím odešel z detailu
+  content.innerHTML=renderRideDetail(r,sd);
+  initChartZoom();
+}
+function closeRideDetail(){detailRideId=null;showTab("jizdy");}
 
 // ── TF ────────────────────────────────────────────────────────────────────────
 function renderTF(){
@@ -1371,8 +1571,13 @@ function renderAdmin(){
       <button class="btn" id="save-btn" onclick="saveSettings()" style="flex:1;background:#1e40af">💾 Uložit vše</button>
       <button class="btn" onclick="clearAllData()" style="background:#7f1d1d;font-size:11px">🗑 Reset</button>
     </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:#64748b">
+      <span>Cache detailů jízd: ${Object.keys(rideStreamsCache).length} jízd</span>
+      <button onclick="clearRideStreamsCache()" style="background:#0f172a;border:1px solid #334155;border-radius:6px;color:#94a3b8;font-size:10px;padding:4px 10px;cursor:pointer">Vymazat</button>
+    </div>
   </div>`;
 }
+function clearRideStreamsCache(){rideStreamsCache={};localStorage.removeItem("cyc_ride_streams");showTab("admin");}
 
 function saveSecret(){const v=document.getElementById("secret-input")?.value?.trim();if(!v)return;localStorage.setItem("cyc_secret",v);showTab("admin");}
 function clearSecret(){if(confirm("Odhlásit Strava?")){["cyc_secret","cyc_token","cyc_refresh","cyc_token_exp"].forEach(k=>localStorage.removeItem(k));showTab("admin");}}
@@ -1395,7 +1600,7 @@ function saveSettings(){
   const btn=document.getElementById("save-btn");
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
 }
-function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};updateHeader();showTab("admin");}}
+function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync","cyc_ride_streams","cyc_pc_cache"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};rideStreamsCache={};detailRideId=null;updateHeader();showTab("admin");}}
 const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:""};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
