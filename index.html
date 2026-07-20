@@ -121,7 +121,9 @@ let S = JSON.parse(localStorage.getItem("cyc_s")||"null") || {
   sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině. Vždy vezmi v úvahu CTL/ATL/TSB, historii jízd a zdravotní stav.",
   quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],
   workerUrl:"",
+  ftpHistory:[{l:"Est. Leden",f:228,d:"2026-01-15"},{l:"Ramp Test Březen",f:238,d:"2026-03-24"},{l:"Ramp Test Červen",f:245,d:"2026-06-10"},{l:"Est. Červenec",f:248,d:"2026-07-14"}],
 };
+if(!S.ftpHistory||!S.ftpHistory.length)S.ftpHistory=[{l:"Aktuální FTP",f:S.ftp,d:new Date().toISOString().slice(0,10)}];
 let RIDES = JSON.parse(localStorage.getItem("cyc_rides")||"[]");
 let aiHistory = JSON.parse(localStorage.getItem("cyc_ai")||"[]");
 let FITNESS=[], LATEST={ctl:0,atl:0,tsb:0};
@@ -221,9 +223,9 @@ const INFO = {
   rideTSS: `<h4>TSS — Training Stress Score</h4>
     Celková zátěž jízdy — kombinuje intenzitu i délku. 100 TSS ≈ 1 hodina na FTP. Právě tahle hodnota se používá pro výpočet CTL/ATL/TSB v záložce Forma.`,
 
-  rideWtep: `<h4>W/tep — Aerobní/kardio efektivita</h4>
+  rideWtep: (ctx)=>`<h4>W/tep — Aerobní/kardio efektivita</h4>
     Kolik wattů "koupíš" za jeden úder srdce. Vyšší = efektivnější podání výkonu vzhledem ke kardio zátěži. Klesá při únavě, nemoci nebo horku, roste s rostoucí kondicí.<br><br>
-    <strong>Orientační pásma</strong> (u tvé výkonnosti, FTP ~${S.ftp}W):<br>
+    <strong>Orientační pásma</strong> (u tvé výkonnosti, FTP ${ctx.ftp||S.ftp}W k datu jízdy):<br>
     <span class="tag" style="background:#2a0a0a;color:#ef4444">&lt; 1.3</span> Nízká — únava/nemoc/horko, nebo nízká intenzita s vysokou TF<br>
     <span class="tag" style="background:#2a1500;color:#fbbf24">1.3–1.6</span> Průměrná<br>
     <span class="tag" style="background:#0c2a4a;color:#38bdf8">1.6–2.0</span> Dobrá<br>
@@ -296,8 +298,10 @@ async function syncRides(token) {
       acts.forEach(a=>{
         if(!["Ride","VirtualRide"].includes(a.sport_type||a.type))return;
         const w=a.average_watts||0;
-        const tss=w>0&&S.ftp>0?Math.round((a.moving_time/3600)*(w/S.ftp)*(w/S.ftp)*100):Math.round(a.suffer_score||30);
-        newRides.push({id:String(a.id),name:a.name,date:(a.start_date_local||"").slice(0,10),
+        const rideDate=(a.start_date_local||"").slice(0,10);
+        const ftpAt=getFtpAtDate(rideDate);
+        const tss=w>0&&ftpAt>0?Math.round((a.moving_time/3600)*(w/ftpAt)*(w/ftpAt)*100):Math.round(a.suffer_score||30);
+        newRides.push({id:String(a.id),name:a.name,date:rideDate,
           type:a.sport_type||a.type,tss,watts:Math.round(w),hr:Math.round(a.average_heartrate||0),
           dur:a.moving_time||0,km:Math.round((a.distance||0)/100)/10,
           elev:Math.round(a.total_elevation_gain||0),kcal:a.calories||0,prs:a.pr_count||0});
@@ -454,6 +458,13 @@ function getZones(ftp){return[
   {z:"Z6",n:"Anaerobní",min:Math.round(ftp*1.20),max:9999,c:"#a855f7"},
 ];}
 function getZone(w){return getZones(S.ftp).find(z=>w>=z.min&&w<z.max)||getZones(S.ftp)[0];}
+function getFtpAtDate(dateStr){
+  const hist=(S.ftpHistory||[]).slice().sort((a,b)=>a.d.localeCompare(b.d));
+  if(!hist.length)return S.ftp;
+  const applicable=hist.filter(h=>h.d<=dateStr);
+  if(applicable.length)return applicable[applicable.length-1].f;
+  return hist[0].f; // jízda předchází první záznam FTP — použij nejstarší známé
+}
 
 // ── HEADER ────────────────────────────────────────────────────────────────────
 function updateHeader(){
@@ -766,7 +777,7 @@ function initChartZoom(){
 
 function infoBtn(key){return `<button class="info-btn" onclick="toggleInfo('${key}')">i</button>`;}
 function infoBtnMini(key){return `<button class="info-btn-mini" onclick="event.stopPropagation();toggleInfo('${key}')">i</button>`;}
-function infoBox(key){return `<div class="info-box" id="info-${key}">${INFO[key]||""}</div>`;}
+function infoBox(key,ctx){const v=INFO[key];const html=typeof v==="function"?v(ctx||{}):v;return `<div class="info-box" id="info-${key}">${html||""}</div>`;}
 function toggleInfo(key){const el=document.getElementById("info-"+key);if(el)el.classList.toggle("open");}
 
 function noData(){return `<div class="card" style="text-align:center;padding:40px 20px">
@@ -840,16 +851,16 @@ function renderPower(){
     <div style="margin-top:8px">${zonesHTML}</div>
   </div>
   <div class="card">
-    <div class="card-header"><div class="card-title">FTP Trend 2026</div>${infoBtn("ftp")}</div>
+    <div class="card-header"><div class="card-title">FTP Trend</div>${infoBtn("ftp")}</div>
     ${infoBox("ftp")}
     <div style="margin-top:10px">
-      ${[{l:"Est. Leden",f:228,d:"2026-01-15"},{l:"Ramp Test Březen",f:238,d:"2026-03-24"},{l:"Ramp Test Červen",f:245,d:"2026-06-10"},{l:"Est. Červenec",f:248,d:"2026-07-14"}]
+      ${(S.ftpHistory||[]).slice().sort((a,b)=>a.d.localeCompare(b.d))
       .map((e,i,arr)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<arr.length-1?"1px solid #334155":"none"}">
         <div style="width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0"></div>
         <div style="flex:1"><div style="font-size:13px;font-weight:600">${e.l}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
         <div style="font-size:18px;font-weight:800;color:#a78bfa">${e.f}W</div>
-        ${i>0?`<div style="font-size:11px;font-weight:700;color:#34d399">+${e.f-arr[i-1].f}W</div>`:""}
-      </div>`).join("")}
+        ${i>0?`<div style="font-size:11px;font-weight:700;color:${e.f-arr[i-1].f>=0?"#34d399":"#ef4444"}">${e.f-arr[i-1].f>=0?"+":""}${e.f-arr[i-1].f}W</div>`:""}
+      </div>`).join("")||`<div style="font-size:12px;color:#64748b;text-align:center;padding:10px">Zatím žádné záznamy — přidej je v Adminu</div>`}
     </div>
   </div>
   <div class="card">
@@ -1015,8 +1026,8 @@ function calcNP(wArr,dt){
   }
   return Math.round(Math.pow(sumQ/wArr.length,0.25));
 }
-function calcZoneTime(wArr,dt){
-  const zones=getZones(S.ftp);
+function calcZoneTime(wArr,dt,ftp){
+  const zones=getZones(ftp||S.ftp);
   const secs=zones.map(()=>0);
   wArr.forEach(w=>{
     let idx=zones.findIndex(z=>w>=z.min&&w<z.max);
@@ -1053,11 +1064,12 @@ function renderRideDetail(r,sd){
   const hasHR=sd.hr&&sd.hr.some(v=>v>0);
   const hasCad=sd.cad&&sd.cad.some(v=>v>0);
   const hasAlt=sd.alt&&sd.alt.length>1;
+  const ftpAtRide=getFtpAtDate(r.date);
   const np=hasPower?calcNP(wArr,dt):0;
-  const ifactor=(hasPower&&S.ftp>0)?(np/S.ftp):0;
+  const ifactor=(hasPower&&ftpAtRide>0)?(np/ftpAtRide):0;
   const vi=(hasPower&&r.watts>0)?(np/r.watts):0;
   const maxHR=hasHR?Math.max(...sd.hr):0;
-  const zoneTimes=hasPower?calcZoneTime(wArr,dt):[];
+  const zoneTimes=hasPower?calcZoneTime(wArr,dt,ftpAtRide):[];
   const bestEfforts=hasPower?calcBestEfforts(r.id,wArr,dt,r.dur):[];
   const eff=(hasPower&&r.hr>0)?(r.watts/r.hr).toFixed(2):"–";
   const comboMetrics=[];
@@ -1096,12 +1108,12 @@ function renderRideDetail(r,sd){
     <div class="grid2">
       <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#a78bfa">${r.watts}W</div></div>
       <div class="kpi-box kpi-box-info">${infoBtnMini("rideNP")}<div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
-      <div class="kpi-box kpi-box-info">${infoBtnMini("rideIF")}<div class="kpi-box-label">IF (NP/FTP)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideIF")}<div class="kpi-box-label">IF (NP/FTP ${ftpAtRide}W)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
       <div class="kpi-box kpi-box-info">${infoBtnMini("rideVI")}<div class="kpi-box-label">Variabilita (VI)</div><div class="kpi-box-val" style="color:#38bdf8">${vi.toFixed(2)}</div></div>
       <div class="kpi-box kpi-box-info">${infoBtnMini("rideTSS")}<div class="kpi-box-label">TSS</div><div class="kpi-box-val" style="color:#fbbf24">${r.tss}</div></div>
       <div class="kpi-box kpi-box-info">${infoBtnMini("rideWtep")}<div class="kpi-box-label">W/tep</div><div class="kpi-box-val" style="color:#34d399">${eff}</div></div>
     </div>
-    ${infoBox("rideNP")}${infoBox("rideIF")}${infoBox("rideVI")}${infoBox("rideTSS")}${infoBox("rideWtep")}
+    ${infoBox("rideNP")}${infoBox("rideIF")}${infoBox("rideVI")}${infoBox("rideTSS")}${infoBox("rideWtep",{ftp:ftpAtRide})}
   </div>`:""}
 
   ${hasHR?`<div class="card">
@@ -1129,7 +1141,7 @@ function renderRideDetail(r,sd){
   </div>`:""}
 
   ${hasPower?`<div class="card">
-    <div class="card-title" style="margin-bottom:8px">Rozložení zón (tato jízda)</div>
+    <div class="card-title" style="margin-bottom:8px">Rozložení zón (tato jízda) · FTP ${ftpAtRide}W</div>
     <div style="margin-top:8px">${zoneTimes.map(z=>`<div class="bar-wrap">
       <div class="zone-lbl" style="color:${z.c}">${z.z}</div>
       <div class="bar-bg"><div class="bar-fill" style="left:0;width:${z.pct}%;background:${z.c}"></div></div>
@@ -1681,7 +1693,65 @@ function renderAdmin(){
       <span>Cache detailů jízd: ${Object.keys(rideStreamsCache).length} jízd</span>
       <button onclick="clearRideStreamsCache()" style="background:#0f172a;border:1px solid #334155;border-radius:6px;color:#94a3b8;font-size:10px;padding:4px 10px;cursor:pointer">Vymazat</button>
     </div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:15px;font-weight:800;color:#a78bfa;margin-bottom:4px">📈 Historie FTP</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">Datované záznamy FTP se používají k přesnému dopočtu TSS/IF/zón u jízd podle toho, jaké FTP jsi měl v ten den — ne podle dnešní hodnoty. Nejnovější záznam automaticky nastaví i "aktuální FTP" nahoře.</div>
+    <div id="ftp-history-list">
+      ${(S.ftpHistory||[]).slice().sort((a,b)=>a.d.localeCompare(b.d)).map(e=>`<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #334155">
+        <div style="width:7px;height:7px;border-radius:50%;background:#a78bfa;flex-shrink:0"></div>
+        <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.l}</div><div style="font-size:10px;color:#64748b">${fmtD(e.d)}</div></div>
+        <div style="font-size:14px;font-weight:800;color:#a78bfa;white-space:nowrap">${e.f}W</div>
+        <button onclick="removeFtpHistoryEntry('${e.d}',${e.f})" style="background:none;border:none;color:#64748b;font-size:13px;cursor:pointer;padding:2px 4px">✕</button>
+      </div>`).join("")||`<div style="font-size:12px;color:#64748b;text-align:center;padding:8px">Zatím žádné záznamy</div>`}
+    </div>
+    <div class="grid2" style="margin-top:10px">
+      <div><div class="field-label">Datum</div><input id="ftph-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div><div class="field-label">FTP (W)</div><input id="ftph-watts" type="number" placeholder="245"></div>
+    </div>
+    <div class="field-label">Popis</div><input id="ftph-label" placeholder="např. Ramp Test Srpen">
+    <button class="btn" onclick="addFtpHistoryEntry()" style="background:#7c3aed;margin-top:8px;width:100%">➕ Přidat záznam</button>
+    <button class="btn" onclick="recalcTssFromHistory()" style="background:#334155;margin-top:8px;width:100%;font-size:12px">🔁 Přepočítat TSS všech jízd podle historie FTP</button>
   </div>`;
+}
+function addFtpHistoryEntry(){
+  const d=document.getElementById("ftph-date")?.value;
+  const l=document.getElementById("ftph-label")?.value?.trim()||"FTP záznam";
+  const f=Number(document.getElementById("ftph-watts")?.value);
+  if(!d||!f||f<=0){alert("Vyplň datum a watty.");return;}
+  S.ftpHistory=S.ftpHistory||[];
+  S.ftpHistory.push({l,f,d});
+  const sorted=S.ftpHistory.slice().sort((a,b)=>a.d.localeCompare(b.d));
+  const newest=sorted[sorted.length-1];
+  if(newest.d===d&&newest.f===f)S.ftp=f; // nejnovější záznam = aktuální FTP
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  recompute();updateHeader();
+  showTab("admin");
+}
+function removeFtpHistoryEntry(d,f){
+  if(!confirm("Smazat tento záznam FTP historie?"))return;
+  S.ftpHistory=(S.ftpHistory||[]).filter(e=>!(e.d===d&&Number(e.f)===Number(f)));
+  localStorage.setItem("cyc_s",JSON.stringify(S));
+  recompute();updateHeader();
+  showTab("admin");
+}
+function recalcTssFromHistory(){
+  if(!confirm("Přepočítat TSS u všech jízd podle historie FTP platné k jejich datu?"))return;
+  let changed=0;
+  RIDES.forEach(r=>{
+    if(r.watts>0){
+      const ftpAt=getFtpAtDate(r.date);
+      if(ftpAt>0){
+        const newTss=Math.round((r.dur/3600)*(r.watts/ftpAt)*(r.watts/ftpAt)*100);
+        if(newTss!==r.tss){r.tss=newTss;changed++;}
+      }
+    }
+  });
+  localStorage.setItem("cyc_rides",JSON.stringify(RIDES));
+  recompute();updateHeader();
+  showTab("admin");
+  setTimeout(()=>alert(`Hotovo — přepočítáno ${changed} jízd.`),50);
 }
 function clearRideStreamsCache(){rideStreamsCache={};localStorage.removeItem("cyc_ride_streams");showTab("admin");}
 
@@ -1707,7 +1777,7 @@ function saveSettings(){
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
 }
 function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync","cyc_ride_streams","cyc_pc_cache"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};rideStreamsCache={};detailRideId=null;updateHeader();showTab("admin");}}
-const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:""};
+const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpHistory:[{l:"Aktuální FTP",f:245,d:new Date().toISOString().slice(0,10)}]};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
