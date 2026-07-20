@@ -199,6 +199,25 @@ const INFO = {
     <span class="tag" style="background:#2a1500;color:#fbbf24">3.5–4.0</span> Závodník<br>
     <span class="tag" style="background:#2a0a0a;color:#ef4444">> 4.0</span> Elite<br><br>
     <strong>Tvůj trend:</strong> 228W → 238W → 245W → est. 248W. +20W za půl roku = výborný progres.`,
+
+  rideVykon: `<h4>Ukazatele výkonu v jízdě</h4>
+    <strong>Normalizovaný výkon (NP):</strong> Není to prostý průměr, ale vážený výkon, který zohledňuje kolísání (klouzavý 30s průměr umocněný na 4. a odmocněný). Lépe vyjadřuje skutečnou fyziologickou zátěž jízdy — u přerušovaných/kopcovitých jízd bývá vyšší než průměr.<br><br>
+    <strong>IF — Intensity Factor (NP/FTP):</strong> Jak náročná jízda byla vzhledem k tvému FTP.<br>
+    <span class="tag" style="background:#1e293b;color:#94a3b8">&lt; 0.75</span> Regenerace/Z2<br>
+    <span class="tag" style="background:#0c2a4a;color:#38bdf8">0.75–0.85</span> Tempo/vytrvalost<br>
+    <span class="tag" style="background:#2a1500;color:#fbbf24">0.85–0.95</span> Práh/SST<br>
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 0.95</span> Nadprahové/závodní úsilí<br><br>
+    <strong>VI — Variabilita (NP/průměrný výkon):</strong> Jak "hladký" nebo "trhaný" byl výkon.<br>
+    • <strong>~1.00–1.05</strong> velmi rovnoměrné (Zwift SST, časovka)<br>
+    • <strong>1.05–1.15</strong> běžná venkovní jízda<br>
+    • <strong>&gt; 1.15</strong> hodně kolísavý výkon (kopce, peloton, sprinty, group ride)<br><br>
+    <strong>TSS — Training Stress Score:</strong> Celková zátěž jízdy (kombinuje intenzitu i délku). 100 TSS ≈ 1 hodina na FTP. Používá se pro výpočet CTL/ATL/TSB v záložce Forma.<br><br>
+    <strong>W/tep:</strong> Kolik wattů "koupíš" za jeden úder srdce — vyšší = efektivnější podání výkonu vzhledem ke kardio zátěži. Klesá při únavě, nemoci nebo horku.`,
+
+  rideCombo: `<h4>Kombinovaný graf</h4>
+    Zobrazuje víc metrik (výkon, tep, kadence, výška) v jednom grafu, aby šel snadno porovnat jejich průběh v čase — např. jak tep zpožděně roste za výkonem, nebo jak kadence klesá do kopce.<br><br>
+    Protože každá metrika má jiné jednotky (watty, tepy, otáčky, metry), jsou pro zobrazení <strong>přeškálované na stejný rozsah</strong> (0–100 % mezi min a max této jízdy) — jde tedy o porovnání <em>tvaru</em> průběhu, ne absolutních hodnot. Skutečné hodnoty v jednotkách uvidíš po najetí/kliknutí na graf.<br><br>
+    Zaškrtávátky pod grafem si zapneš/vypneš jednotlivé metriky.`,
 };
 
 // ── STRAVA OAUTH ──────────────────────────────────────────────────────────────
@@ -501,7 +520,7 @@ function chartTip(e){
   const relX=(e.clientX-rect.left)/rect.width*CHART_W;
   const cw=CHART_W-CHART_PAD.l-CHART_PAD.r;
   let idx;
-  if(meta.type==='line'){
+  if(meta.type==='line'||meta.type==='combo'){
     idx=Math.round((relX-CHART_PAD.l)/cw*(meta.data.length-1));
   }else{
     idx=Math.floor((relX-CHART_PAD.l)/(cw/meta.data.length));
@@ -512,6 +531,10 @@ function chartTip(e){
   if(meta.type==='line'){
     html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||''}</div>`+
       meta.keys.map((k,i)=>`<div><span style="color:${meta.colors[i]}">●</span> ${(meta.labels[i]||k).toUpperCase()}: <b>${d[k]??0}</b>${meta.unit}</div>`).join('');
+  }else if(meta.type==='combo'){
+    html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||''}</div>`+
+      (meta.metrics.length?meta.metrics.map(m=>`<div><span style="color:${m.color}">●</span> ${m.label}: <b>${Math.round(d[m.key]??0)}</b>${m.unit}</div>`).join(''):
+      `<div style="color:#64748b">Zapni alespoň jednu metriku</div>`);
   }else{
     html=`<div style="font-weight:800;margin-bottom:3px;color:#94a3b8">${d.label||d.d||''}</div><div><span style="color:${meta.color}">●</span> <b>${d[meta.key]??0}</b>${meta.unit}</div>`+
       (meta.refVal?`<div style="color:#a78bfa">${meta.refLabel}: <b>${meta.refVal}</b>${meta.unit}</div>`:'');
@@ -551,7 +574,7 @@ function fmtRangeLabel(cfg,start,end){
 function renderZoomChart(zid){
   const cfg=_zoomCfg[zid],st=_zoomState[zid];
   const shown=decimate(cfg.fullData.slice(st.start,st.end+1),cfg.maxPoints);
-  const svg=svgLine(shown,cfg.keys,cfg.colors,cfg.H,cfg.unit,cfg.labels);
+  const svg=cfg.type==="combo"?svgCombo(shown,cfg):svgLine(shown,cfg.keys,cfg.colors,cfg.H,cfg.unit,cfg.labels);
   const el=document.getElementById("zc-"+zid);if(el)el.innerHTML=svg;
   const rl=document.getElementById("zr-"+zid);if(rl)rl.textContent=fmtRangeLabel(cfg,st.start,st.end);
 }
@@ -569,6 +592,60 @@ function zoomWrapLine(fullData,keys,colors,H,unit,labels,zid,maxPoints=90){
     </div>
     <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
   </div>`;
+}
+// ── KOMBINOVANÝ GRAF (výkon/TF/kadence/výška přeložené přes sebe, zapínatelné) ─
+function svgCombo(data,cfg){
+  const id="c"+(_chartId++);
+  const metrics=cfg.metrics.filter(m=>cfg.active.has(m.key));
+  _chartMeta[id]={type:"combo",data,metrics};
+  const W=CHART_W,p=CHART_PAD,H=cfg.H||190;
+  const cw=W-p.l-p.r,ch=H-p.t-p.b;
+  const px=i=>p.l+i/(data.length-1||1)*cw;
+  const norm=(v,key)=>{const r=cfg.metricRange[key],range=(r.max-r.min)||1;return (v-r.min)/range;};
+  const py=frac=>p.t+ch-frac*ch;
+  let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block" data-cid="${id}" ${CHART_EVTS}>`;
+  const step=Math.max(1,Math.floor(data.length/6));
+  data.forEach((d,i)=>{if(i%step===0)s+=`<line x1="${px(i)}" y1="${p.t}" x2="${px(i)}" y2="${H-p.b}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;});
+  for(let i=0;i<=3;i++){const y=p.t+i*ch/3;s+=`<line x1="${p.l}" y1="${y}" x2="${W-p.r}" y2="${y}" stroke="#334155" stroke-width="1" stroke-opacity="0.7"/>`;}
+  data.forEach((d,i)=>{if(i%step===0)s+=`<text x="${px(i)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="8">${d.label}</text>`;});
+  metrics.forEach(m=>{
+    const pts=data.map((d,i)=>`${px(i)},${py(norm(d[m.key]||0,m.key))}`).join(" ");
+    s+=`<polyline points="${pts}" fill="none" stroke="${m.color}" stroke-width="2"/>`;
+  });
+  if(!metrics.length)s+=`<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#475569" font-size="11">Zapni alespoň jednu metriku níže</text>`;
+  return s+`</svg>`;
+}
+function comboWrapChart(fullData,metrics,zid,maxPoints=100){
+  const metricRange={};
+  metrics.forEach(m=>{const vals=fullData.map(d=>d[m.key]||0);metricRange[m.key]={min:Math.min(...vals),max:Math.max(...vals)};});
+  const prevActive=_zoomCfg[zid]&&_zoomCfg[zid].active;
+  const active=prevActive||new Set(metrics.map(m=>m.key));
+  _zoomCfg[zid]={type:"combo",fullData,metrics,metricRange,H:190,maxPoints,active};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  const st=_zoomState[zid];
+  const svg=svgCombo(decimate(fullData.slice(st.start,st.end+1),maxPoints),_zoomCfg[zid]);
+  const legend=metrics.map(m=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${active.has(m.key)?m.color:"#475569"};margin-right:14px;margin-bottom:6px;cursor:pointer">
+    <input type="checkbox" ${active.has(m.key)?"checked":""} onchange="toggleComboSeries('${zid}','${m.key}')" style="accent-color:${m.color};width:14px;height:14px">${m.label}
+  </label>`).join("");
+  return `<div id="combo-legend-${zid}" style="margin-bottom:6px">${legend}</div>
+  <div class="chart-zoom" data-zid="${zid}">
+    <div id="zc-${zid}">${svg}</div>
+    <div class="zoom-ctrl">
+      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+    </div>
+    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
+  </div>`;
+}
+function toggleComboSeries(zid,key){
+  const cfg=_zoomCfg[zid];
+  if(!cfg)return;
+  if(cfg.active.has(key))cfg.active.delete(key);else cfg.active.add(key);
+  renderZoomChart(zid);
+  const m=cfg.metrics.find(x=>x.key===key);
+  const lbl=event.currentTarget.closest("label");
+  if(lbl&&m)lbl.style.color=cfg.active.has(key)?m.color:"#475569";
 }
 function setWindowRaw(zid,start,end){
   const cfg=_zoomCfg[zid],N=cfg.fullData.length;
@@ -966,6 +1043,11 @@ function renderRideDetail(r,sd){
   const zoneTimes=hasPower?calcZoneTime(wArr,dt):[];
   const bestEfforts=hasPower?calcBestEfforts(r.id,wArr,dt,r.dur):[];
   const eff=(hasPower&&r.hr>0)?(r.watts/r.hr).toFixed(2):"–";
+  const comboMetrics=[];
+  if(hasPower)comboMetrics.push({key:"w",label:"Výkon",color:"#a78bfa",unit:"W"});
+  if(hasHR)comboMetrics.push({key:"hr",label:"Tep. frekvence",color:"#ef4444",unit:"bpm"});
+  if(hasCad)comboMetrics.push({key:"cad",label:"Kadence",color:"#38bdf8",unit:"rpm"});
+  if(hasAlt)comboMetrics.push({key:"alt",label:"Výška",color:"#94a3b8",unit:"m"});
   return `
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
     <button onclick="closeRideDetail()" style="background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:14px;padding:6px 12px;cursor:pointer">← Zpět</button>
@@ -986,9 +1068,16 @@ function renderRideDetail(r,sd){
     </div>
   </div>
 
+  ${comboMetrics.length>1?`<div class="card">
+    <div class="card-header"><div class="card-title">Kombinovaný graf</div>${infoBtn("rideCombo")}</div>
+    ${infoBox("rideCombo")}
+    <div style="margin-top:8px">${comboWrapChart(series,comboMetrics,"rd-combo-"+r.id)}</div>
+  </div>`:""}
+
   ${hasPower?`<div class="card">
-    <div class="card-title" style="margin-bottom:8px">Výkon</div>
-    <div class="grid2">
+    <div class="card-header"><div class="card-title">Výkon</div>${infoBtn("rideVykon")}</div>
+    ${infoBox("rideVykon")}
+    <div class="grid2" style="margin-top:8px">
       <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#a78bfa">${r.watts}W</div></div>
       <div class="kpi-box"><div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
       <div class="kpi-box"><div class="kpi-box-label">IF (NP/FTP)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
