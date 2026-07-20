@@ -51,6 +51,8 @@ textarea{resize:vertical}
 .btn{border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;padding:10px 16px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .kpi-box{background:#0f172a;border-radius:8px;padding:10px}
+.kpi-box-info{position:relative;padding-right:24px}
+.info-btn-mini{position:absolute;top:6px;right:6px;background:#1e293b;border:1px solid #334155;border-radius:50%;width:16px;height:16px;color:#64748b;font-size:9px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;line-height:1;padding:0}
 .kpi-box-label{font-size:10px;color:#64748b}
 .kpi-box-val{font-size:18px;font-weight:800;margin:2px 0}
 .kpi-box-sub{font-size:10px;color:#94a3b8}
@@ -200,19 +202,33 @@ const INFO = {
     <span class="tag" style="background:#2a0a0a;color:#ef4444">> 4.0</span> Elite<br><br>
     <strong>Tvůj trend:</strong> 228W → 238W → 245W → est. 248W. +20W za půl roku = výborný progres.`,
 
-  rideVykon: `<h4>Ukazatele výkonu v jízdě</h4>
-    <strong>Normalizovaný výkon (NP):</strong> Není to prostý průměr, ale vážený výkon, který zohledňuje kolísání (klouzavý 30s průměr umocněný na 4. a odmocněný). Lépe vyjadřuje skutečnou fyziologickou zátěž jízdy — u přerušovaných/kopcovitých jízd bývá vyšší než průměr.<br><br>
-    <strong>IF — Intensity Factor (NP/FTP):</strong> Jak náročná jízda byla vzhledem k tvému FTP.<br>
+  rideNP: `<h4>NP — Normalizovaný výkon</h4>
+    Není to prostý průměr, ale vážený výkon, který zohledňuje kolísání (klouzavý 30s průměr umocněný na 4. a pak odmocněný). Lépe vyjadřuje skutečnou fyziologickou zátěž jízdy — u přerušovaných/kopcovitých jízd bývá vyšší než průměr, u rovnoměrné jízdy (časovka, Zwift SST) se mu blíží.`,
+
+  rideIF: `<h4>IF — Intensity Factor (NP/FTP)</h4>
+    Jak náročná byla jízda vzhledem k tvému FTP.<br><br>
     <span class="tag" style="background:#1e293b;color:#94a3b8">&lt; 0.75</span> Regenerace/Z2<br>
     <span class="tag" style="background:#0c2a4a;color:#38bdf8">0.75–0.85</span> Tempo/vytrvalost<br>
     <span class="tag" style="background:#2a1500;color:#fbbf24">0.85–0.95</span> Práh/SST<br>
-    <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 0.95</span> Nadprahové/závodní úsilí<br><br>
-    <strong>VI — Variabilita (NP/průměrný výkon):</strong> Jak "hladký" nebo "trhaný" byl výkon.<br>
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&gt; 0.95</span> Nadprahové/závodní úsilí`,
+
+  rideVI: `<h4>VI — Variabilita výkonu (NP/průměr)</h4>
+    Jak "hladký" nebo "trhaný" byl výkon.<br><br>
     • <strong>~1.00–1.05</strong> velmi rovnoměrné (Zwift SST, časovka)<br>
     • <strong>1.05–1.15</strong> běžná venkovní jízda<br>
-    • <strong>&gt; 1.15</strong> hodně kolísavý výkon (kopce, peloton, sprinty, group ride)<br><br>
-    <strong>TSS — Training Stress Score:</strong> Celková zátěž jízdy (kombinuje intenzitu i délku). 100 TSS ≈ 1 hodina na FTP. Používá se pro výpočet CTL/ATL/TSB v záložce Forma.<br><br>
-    <strong>W/tep:</strong> Kolik wattů "koupíš" za jeden úder srdce — vyšší = efektivnější podání výkonu vzhledem ke kardio zátěži. Klesá při únavě, nemoci nebo horku.`,
+    • <strong>&gt; 1.15</strong> hodně kolísavý výkon (kopce, peloton, sprinty, group ride)`,
+
+  rideTSS: `<h4>TSS — Training Stress Score</h4>
+    Celková zátěž jízdy — kombinuje intenzitu i délku. 100 TSS ≈ 1 hodina na FTP. Právě tahle hodnota se používá pro výpočet CTL/ATL/TSB v záložce Forma.`,
+
+  rideWtep: `<h4>W/tep — Aerobní/kardio efektivita</h4>
+    Kolik wattů "koupíš" za jeden úder srdce. Vyšší = efektivnější podání výkonu vzhledem ke kardio zátěži. Klesá při únavě, nemoci nebo horku, roste s rostoucí kondicí.<br><br>
+    <strong>Orientační pásma</strong> (u tvé výkonnosti, FTP ~${S.ftp}W):<br>
+    <span class="tag" style="background:#2a0a0a;color:#ef4444">&lt; 1.3</span> Nízká — únava/nemoc/horko, nebo nízká intenzita s vysokou TF<br>
+    <span class="tag" style="background:#2a1500;color:#fbbf24">1.3–1.6</span> Průměrná<br>
+    <span class="tag" style="background:#0c2a4a;color:#38bdf8">1.6–2.0</span> Dobrá<br>
+    <span class="tag" style="background:#0a2a0a;color:#34d399">&gt; 2.0</span> Výborná (svěží, dobře trénovaný)<br><br>
+    Nejvíc ale vypovídá <strong>trend v čase u tebe samotného</strong> — číslo hodně závisí na FTP, TF maximu a typu jízdy (Z2 vs. práh), takže napříč cyklisty se moc srovnávat nedá.`,
 
   rideCombo: `<h4>Kombinovaný graf</h4>
     Zobrazuje víc metrik (výkon, tep, kadence, výška) v jednom grafu, aby šel snadno porovnat jejich průběh v čase — např. jak tep zpožděně roste za výkonem, nebo jak kadence klesá do kopce.<br><br>
@@ -749,6 +765,7 @@ function initChartZoom(){
 }
 
 function infoBtn(key){return `<button class="info-btn" onclick="toggleInfo('${key}')">i</button>`;}
+function infoBtnMini(key){return `<button class="info-btn-mini" onclick="event.stopPropagation();toggleInfo('${key}')">i</button>`;}
 function infoBox(key){return `<div class="info-box" id="info-${key}">${INFO[key]||""}</div>`;}
 function toggleInfo(key){const el=document.getElementById("info-"+key);if(el)el.classList.toggle("open");}
 
@@ -1075,16 +1092,16 @@ function renderRideDetail(r,sd){
   </div>`:""}
 
   ${hasPower?`<div class="card">
-    <div class="card-header"><div class="card-title">Výkon</div>${infoBtn("rideVykon")}</div>
-    ${infoBox("rideVykon")}
-    <div class="grid2" style="margin-top:8px">
+    <div class="card-title" style="margin-bottom:8px">Výkon</div>
+    <div class="grid2">
       <div class="kpi-box"><div class="kpi-box-label">Průměr</div><div class="kpi-box-val" style="color:#a78bfa">${r.watts}W</div></div>
-      <div class="kpi-box"><div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
-      <div class="kpi-box"><div class="kpi-box-label">IF (NP/FTP)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
-      <div class="kpi-box"><div class="kpi-box-label">Variabilita (VI)</div><div class="kpi-box-val" style="color:#38bdf8">${vi.toFixed(2)}</div></div>
-      <div class="kpi-box"><div class="kpi-box-label">TSS</div><div class="kpi-box-val" style="color:#fbbf24">${r.tss}</div></div>
-      <div class="kpi-box"><div class="kpi-box-label">W/tep</div><div class="kpi-box-val" style="color:#34d399">${eff}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideNP")}<div class="kpi-box-label">Normalizovaný (NP)</div><div class="kpi-box-val" style="color:#a78bfa">${np}W</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideIF")}<div class="kpi-box-label">IF (NP/FTP)</div><div class="kpi-box-val" style="color:#38bdf8">${ifactor.toFixed(2)}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideVI")}<div class="kpi-box-label">Variabilita (VI)</div><div class="kpi-box-val" style="color:#38bdf8">${vi.toFixed(2)}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideTSS")}<div class="kpi-box-label">TSS</div><div class="kpi-box-val" style="color:#fbbf24">${r.tss}</div></div>
+      <div class="kpi-box kpi-box-info">${infoBtnMini("rideWtep")}<div class="kpi-box-label">W/tep</div><div class="kpi-box-val" style="color:#34d399">${eff}</div></div>
     </div>
+    ${infoBox("rideNP")}${infoBox("rideIF")}${infoBox("rideVI")}${infoBox("rideTSS")}${infoBox("rideWtep")}
   </div>`:""}
 
   ${hasHR?`<div class="card">
