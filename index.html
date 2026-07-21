@@ -1398,16 +1398,39 @@ function cleanAIText(text){
 function mdBold(line){return line.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>");}
 
 function extractWorkouts(text){
-  const m=String(text).match(/===WORKOUTS_JSON===([\s\S]*?)===END_WORKOUTS_JSON===/);
-  if(!m) return {text, workouts:null};
-  const cleanText=text.replace(m[0],"").trim();
+  text=String(text);
+  const startMarker="===WORKOUTS_JSON===", endMarker="===END_WORKOUTS_JSON===";
+  const startIdx=text.indexOf(startMarker);
+  if(startIdx===-1) return {text, workouts:null, truncated:false};
+  const endIdx=text.indexOf(endMarker);
+  const truncated=(endIdx===-1);
+  // text před blokem je vždy čistý výstup pro uživatele — JSON blok (celý nebo oříznutý) se ZAKAŽDÝM odstraní ze zobrazovaného textu
+  const cleanText=text.slice(0,startIdx).trim();
+  const jsonStr=(!truncated
+    ? text.slice(startIdx+startMarker.length,endIdx)
+    : text.slice(startIdx+startMarker.length)
+  ).trim();
   try{
-    const parsed=JSON.parse(m[1].trim());
+    const parsed=JSON.parse(jsonStr);
     const withIds=parsed.map((w,i)=>({id:"w_"+Date.now()+"_"+i, createdAt:new Date().toISOString(), ...w}));
-    return {text:cleanText, workouts:withIds};
+    return {text:cleanText, workouts:withIds, truncated};
   }catch(e){
-    return {text:cleanText, workouts:null};
+    // odpověď byla pravděpodobně oříznutá (max_tokens v Workeru) — zkus zachránit aspoň kompletní tréninky ze začátku pole
+    const salvaged=salvageTruncatedWorkoutsJson(jsonStr);
+    return {text:cleanText, workouts:(salvaged&&salvaged.length)
+      ? salvaged.map((w,i)=>({id:"w_"+Date.now()+"_"+i, createdAt:new Date().toISOString(), ...w}))
+      : null, truncated};
   }
+}
+
+function salvageTruncatedWorkoutsJson(str){
+  // najde poslední uzavřený objekt tréninku v poli a zkusí ho parsovat jako platné (uzavřené) pole
+  const lastComplete=str.lastIndexOf("},");
+  if(lastComplete===-1)return null;
+  try{
+    const parsed=JSON.parse(str.slice(0,lastComplete+1)+"]");
+    return Array.isArray(parsed)?parsed:null;
+  }catch(e){return null;}
 }
 
 function renderPlanOutput(text) {
@@ -1488,7 +1511,7 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
       body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
     const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
-    const {text:cleanText,workouts}=extractWorkouts(ans);
+    const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
       TRAINING_PLANS=workouts;
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
@@ -1497,7 +1520,8 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     localStorage.setItem("cyc_plan",JSON.stringify(cleanText));
     syncToCloud();
     const out=document.getElementById("plan-output");
-    if(out)out.innerHTML=renderPlanOutput(cleanText)+(workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:8px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:"");
+    const truncWarning=truncated?`<div style="background:#3f1d0a;border:1px solid #92400e;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#fbbf24">⚠️ Odpověď od AI byla oříznutá (limit délky odpovědi ve Workeru) — ${workouts&&workouts.length?`zachráněno ${workouts.length} kompletních tréninků, zbytek chybí`:"tréninky se nepodařilo načíst"}. Zvyš max_tokens v Cloudflare Workeru.</div>`:"";
+    if(out)out.innerHTML=renderPlanOutput(cleanText)+truncWarning+(workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:8px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:"");
   }catch(e){
     const out=document.getElementById("plan-output");
     if(out)out.innerHTML=`<div style="color:#ef4444;font-size:12px;padding:10px">❌ Chyba: ${e.message}</div>`;
@@ -1554,6 +1578,7 @@ function renderTreninky(){
         <button class="btn" onclick="showTab('plan')" style="background:#1e40af;flex:1">📅 Přejít na Plán</button>
         <button class="btn" onclick="syncFromCloud()" style="background:#334155;flex:1">🔄 Synchronizovat</button>
       </div>
+      <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:10px"></div>
     </div>`;
   }
   const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
@@ -1602,6 +1627,7 @@ function renderTreninky(){
       </div>
       <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
     </div>
+    <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:8px"></div>
   </div>
   ${cards}
   <button class="btn" onclick="clearAllWorkouts()" style="width:100%;background:#334155;font-size:11px;margin-top:4px">🗑 Smazat vše</button>
@@ -1824,7 +1850,7 @@ async function askCoach(){
     });
     const data=await res.json();
     const rawAns=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
-    const {text:ans,workouts}=extractWorkouts(rawAns);
+    const {text:ans,workouts,truncated}=extractWorkouts(rawAns);
     if(workouts&&workouts.length){
       TRAINING_PLANS=workouts;
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
@@ -1833,9 +1859,11 @@ async function askCoach(){
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
+    const truncWarning=truncated?`<div style="background:#3f1d0a;border:1px solid #92400e;border-radius:8px;padding:10px;margin-top:10px;font-size:11px;color:#fbbf24">⚠️ Odpověď od AI byla oříznutá (limit délky odpovědi ve Workeru) — ${workouts&&workouts.length?`zachráněno ${workouts.length} kompletních tréninků, zbytek chybí`:"tréninky se nepodařilo načíst"}. Zvyš max_tokens v Cloudflare Workeru.</div>`:"";
     if(rb)rb.innerHTML=`<div style="background:#0a1628;border:1px solid #1e40af;border-radius:10px;padding:16px;margin-top:12px">
       <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-4-6</div>
       <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${mdBold(ans)}</div>
+      ${truncWarning}
       ${workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:10px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:""}
     </div>`;
   }catch(e){
@@ -1949,7 +1977,7 @@ async function syncFromCloud(silent){
     if(!silent)setSyncBadge("✅ Sync OK · "+new Date(remote.ts).toLocaleTimeString("cs-CZ"));
   }catch(e){if(!silent)setSyncBadge("⚠️ Chyba při stahování: "+e.message);}
 }
-function setSyncBadge(txt){const el=document.getElementById("sync-badge");if(el)el.textContent=txt;}
+function setSyncBadge(txt){document.querySelectorAll(".sync-status-el").forEach(el=>el.textContent=txt);}
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 function renderAdmin(){
@@ -1981,7 +2009,7 @@ function renderAdmin(){
     <input id="worker-url" placeholder="https://xxx.workers.dev" value="${S.workerUrl||""}">
     <button class="btn" onclick="saveWorker()" style="background:#1e40af;margin-top:8px;width:100%">💾 Uložit Worker URL</button>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 10px">
-      <span style="font-size:11px;color:#64748b;flex:1" id="sync-badge">☁️ Sync mezi zařízeními zatím neproveden</span>
+      <span style="font-size:11px;color:#64748b;flex:1" id="sync-badge" class="sync-status-el">☁️ Sync mezi zařízeními zatím neproveden</span>
       <button onclick="syncFromCloud()" style="background:#334155;color:#e2e8f0;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer">🔄 Sync teď</button>
     </div>
     <div style="background:#0f172a;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#94a3b8;line-height:1.6">
