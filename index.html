@@ -1404,8 +1404,9 @@ function extractWorkouts(text){
   if(startIdx===-1) return {text, workouts:null, truncated:false};
   const endIdx=text.indexOf(endMarker);
   const truncated=(endIdx===-1);
-  // text před blokem je vždy čistý výstup pro uživatele — JSON blok (celý nebo oříznutý) se ZAKAŽDÝM odstraní ze zobrazovaného textu
-  const cleanText=text.slice(0,startIdx).trim();
+  const before=text.slice(0,startIdx);
+  const after=truncated?"":text.slice(endIdx+endMarker.length);
+  const cleanText=(before+"\n"+after).trim();
   const jsonStr=(!truncated
     ? text.slice(startIdx+startMarker.length,endIdx)
     : text.slice(startIdx+startMarker.length)
@@ -1690,20 +1691,15 @@ SPECIFIKA CYKLISTIKY:
 - Long rides v Z2 budují tukový metabolismus a mitochondriální hustotu
 - SST 3x15 nebo 2x20 min = páteř FTP budování pro amatéry
 - VO2max intervaly 6x3 min nebo 5x4 min = nejefektivnější formát pro časově limitované sportovce
-
-ODPOVÍDEJ VŽDY:
-1. Krátké shrnutí aktuálního stavu (2-3 věty)
-2. Konkrétní doporučení sestavené jako POŘADÍ "Den 1" až "Den 7" (u KAŽDÉHO dne uveď buď konkrétní trénink s wattami a délkou, nebo "volno"/"aktivní regenerace" — nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). Celkový součet tréninkových hodin nesmí překročit ${wh}h. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7", sportovec si je sám namapuje na svůj kalendář. Skladba a formáty tréninků (délky intervalů, počty opakování, typ zahřátí, poměr Z2/SST/VO2max) se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
-3. Proč — fyziologické zdůvodnění
-4. Na co si dát pozor
-Odpovídej v češtině, stručně ale konkrétně. Watty vždy uváděj jako % FTP i absolutní hodnotu.`;
+`;
 
   if(includeWorkoutSchema){
     prompt+=`
+FORMÁT ODPOVĚDI — ZÁVAZNÉ POŘADÍ: Odpověď MUSÍ začínat ROVNOU JSON blokem (žádný text, žádné shrnutí před ním) a teprve PO něm následuje textová část popsaná níže v ODPOVÍDEJ VŽDY. Důvod: pokud odpověď z jakéhokoli důvodu nedojede celá, díky tomuto pořadí zůstanou strukturovaná data tréninků vždy kompletní — ořízne se maximálně závěr textové části, nikdy JSON.
 
-DODATEČNĚ: Za celou textovou odpověď PŘIDEJ blok se strukturovanými tréninky ve formátu níže. Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
+Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
 
-Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 výše):
+Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže):
 
 DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
 
@@ -1752,8 +1748,19 @@ DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony 
 ]
 ===END_WORKOUTS_JSON===
 
-Vygeneruj JEDEN objekt v poli pro každý navržený trénink z bodu 2 výše (ne pro odpočinkové/volné dny bez tréninku). Řaď je v poli podle "day_number" vzestupně.`;
+Vygeneruj JEDEN objekt v poli pro každý navržený trénink z bodu 2 níže (ne pro odpočinkové/volné dny bez tréninku). Řaď je v poli podle "day_number" vzestupně. TOTO POLE MUSÍ OBSAHOVAT VŠECHNY navržené tréninkové dny z bodu 2 — ne jen první 1-2.
+
+TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
+
+  prompt+=`
+ODPOVÍDEJ VŽDY:
+1. Krátké shrnutí aktuálního stavu (2-3 věty)
+2. Konkrétní doporučení sestavené jako POŘADÍ "Den 1" až "Den 7" (u KAŽDÉHO dne uveď buď konkrétní trénink s wattami a délkou, nebo "volno"/"aktivní regenerace" — nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). Celkový součet tréninkových hodin nesmí překročit ${wh}h. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7", sportovec si je sám namapuje na svůj kalendář. Skladba a formáty tréninků (délky intervalů, počty opakování, typ zahřátí, poměr Z2/SST/VO2max) se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
+3. Proč — fyziologické zdůvodnění
+4. Na co si dát pozor
+Buď v textové části stručný a věcný (žádné zbytečné omáčky) — prostor v odpovědi je omezený a JSON blok má přednost.
+Odpovídej v češtině. Watty vždy uváděj jako % FTP i absolutní hodnotu.`;
   return prompt;
 }
 
