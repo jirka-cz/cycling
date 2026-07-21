@@ -1614,9 +1614,14 @@ function renderTreninky(){
 // ── AI TRENÉR ─────────────────────────────────────────────────────────────────
 function buildCoachSystemPrompt(includeWorkoutSchema){
   const wh=S.weeklyHours||8;
-  const timeGuidance = wh>=10
-    ? `Sportovec má ${wh}h/týden — dostatečný objem na to, aby polarizovaný poměr 80/20 (Seiler) dával smysl doslovně.`
-    : `Sportovec má jen ${wh}h/týden. DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu.`;
+  let timeGuidance;
+  if(wh>=15){
+    timeGuidance=`Sportovec má ${wh}h/týden — vysoký objem. Skladba týdne: cca 75-80% objemu v Z1-Z2 (polarizovaný poměr dle Seilera dává smysl doslovně), 2-3 delší Z2 jízdy (90-180 min) na aerobní základ a mitochondriální adaptace, 1 SST/threshold blok, 1 VO2max/anaerobní blok. Objem umožňuje i doplňkovou tempo (Z3) jízdu nebo druhou kvalitní jednotku. Skladba MUSÍ být viditelně odlišná od nízkoobjemového týdne — víc hodin znamená víc a delších Z2 jízd, ne jen prodloužené verze stejných intervalů.`;
+  } else if(wh>=10){
+    timeGuidance=`Sportovec má ${wh}h/týden — střední objem. Skladba týdne: 1 delší Z2 jízda (90+ min, jinak nemá aerobní přínos) jako základ, 1-2 kvalitní intenzivní jednotky (SST/threshold + VO2max/anaerobní), zbytek doplňkové Z2/aktivní regenerace. Neplň Z2 objem uměle jen kvůli poměru 80/20 — každá Z2 jízda musí mít reálné trvání (60+ min).`;
+  } else {
+    timeGuidance=`Sportovec má jen ${wh}h/týden. DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu.`;
+  }
 
   let prompt=`Jsi EliteCoach — expertní cyklistický trenér s hlubokou znalostí sportovní fyziologie a periodizace. Vycházíš z těchto vědecky podložených principů:
 
@@ -1626,6 +1631,12 @@ FYZIOLOGIE A TRÉNINKOVÉ ZÓNY:
 - Sweet Spot (88-93% FTP) = nejefektivnější zóna pro zvýšení FTP s přijatelnou únavou
 - Polarizovaný trénink: 80% objemu v Z1-Z2, 20% v Z4-Z5 (Seiler princip) — platí především u vysokého týdenního objemu, viz níže
 - Tempo zóna (Z3, 76-90% FTP) má nižší poměr adaptace/únava — používej střídmě
+
+ZAHŘÁTÍ A PRIMING — ROZLIŠUJ PODLE TYPU HLAVNÍHO INTERVALU:
+- SST/threshold (85-94% FTP): postupné zahřátí Z1→Z2 (10-15 min) stačí, přímý nástup na 90% FTP je fyziologicky v pořádku (podprahová/prahová zátěž nevyžaduje maximální nábor vláken ani špičkovou VO2 kinetiku)
+- VO2max/anaerobní/supra-threshold (100%+ FTP): do zahřátí VŽDY zařaď 2-3 krátké "aktivační" úseky (30-60s na 95-105% FTP, 1-2 min volno mezi nimi) těsně před prvním intervalem — urychlují VO2 kinetiku (rychlejší nástup aerobního krytí, nižší kyslíkový deficit, kvalitnější první interval). Tyto úseky patří jako samostatné fáze v "phases" (např. "Aktivace 1", "Aktivace 2"), NE jako součást hlavních intervalů
+- Sprinty/neuromuskulární práce: podobně krátké aktivační sprinty na konci zahřátí
+- Dlouhé Z2 jízdy: postačí kratší progresivní rozjezd (5-10 min), není potřeba aktivace
 
 ČASOVÁ KAPACITA SPORTOVCE:
 ${timeGuidance}
@@ -1656,7 +1667,7 @@ SPECIFIKA CYKLISTIKY:
 
 ODPOVÍDEJ VŽDY:
 1. Krátké shrnutí aktuálního stavu (2-3 věty)
-2. Konkrétní doporučení sestavené jako POŘADÍ "Den 1" až "Den 7" (u KAŽDÉHO dne uveď buď konkrétní trénink s wattami a délkou, nebo "volno"/"aktivní regenerace" — nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). Celkový součet tréninkových hodin nesmí překročit ${wh}h. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7", sportovec si je sám namapuje na svůj kalendář.
+2. Konkrétní doporučení sestavené jako POŘADÍ "Den 1" až "Den 7" (u KAŽDÉHO dne uveď buď konkrétní trénink s wattami a délkou, nebo "volno"/"aktivní regenerace" — nikdy dva těžké intervalové dny za sebou bez rozestupu, pokud to fyziologie nevyžaduje jinak). Celkový součet tréninkových hodin nesmí překročit ${wh}h. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7", sportovec si je sám namapuje na svůj kalendář. Skladba a formáty tréninků (délky intervalů, počty opakování, typ zahřátí, poměr Z2/SST/VO2max) se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
 3. Proč — fyziologické zdůvodnění
 4. Na co si dát pozor
 Odpovídej v češtině, stručně ale konkrétně. Watty vždy uváděj jako % FTP i absolutní hodnotu.`;
@@ -1667,6 +1678,9 @@ Odpovídej v češtině, stručně ale konkrétně. Watty vždy uváděj jako % 
 DODATEČNĚ: Za celou textovou odpověď PŘIDEJ blok se strukturovanými tréninky ve formátu níže. Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
 
 Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 výše):
+
+DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
+
 ===WORKOUTS_JSON===
 [
   {
@@ -1684,6 +1698,30 @@ Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém po
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
     "setup_tip": "Zwift/Garmin ERG mód: nastav 90% FTP na intervaly, 45% na odpočinek. Pokud nemáš ERG, jeď podle wattmetru na Sweet Spot zóně."
+  },
+  {
+    "day_number": 3,
+    "title": "VO2max 5x4",
+    "type": "VO2max",
+    "duration_min": 60,
+    "phases": [
+      {"phase":"Zahřátí","duration_min":10,"ftp_pct":"50-60%"},
+      {"phase":"Aktivace 1","duration_min":1,"ftp_pct":"100%"},
+      {"phase":"Volno","duration_min":2,"ftp_pct":"45%"},
+      {"phase":"Aktivace 2","duration_min":1,"ftp_pct":"100%"},
+      {"phase":"Volno","duration_min":2,"ftp_pct":"45%"},
+      {"phase":"Interval 1","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
+      {"phase":"Interval 2","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
+      {"phase":"Interval 3","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
+      {"phase":"Interval 4","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
+      {"phase":"Interval 5","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
+    ],
+    "setup_tip": "Zwift/Garmin ERG mód: aktivační úseky i intervaly nastav dle % FTP výše. Aktivace před VO2max blokem urychlí nástup aerobního krytí a zkvalitní první interval."
   }
 ]
 ===END_WORKOUTS_JSON===
