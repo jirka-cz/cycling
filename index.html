@@ -1180,7 +1180,9 @@ function detectRideStructure(sd,ftp){
   if(n<10||!wRaw.length)return null;
   const hr=sd.hr||[],cad=sd.cad||[];
   const dt=(t[n-1]-t[0])/(n-1||1)||1;
-  const smoothed=smoothArr(wRaw.map(x=>x||0),15,dt);
+  // krátké vyhlazení (8s) — stačí odfiltrovat GPS/power meter šum (pár sekund),
+  // ale zachová i krátké 15-30s mikro-bursty (VO2max/anaerobní/Lactate Shuttle)
+  const smoothed=smoothArr(wRaw.map(x=>x||0),8,dt);
   const zones=getZones(ftp||getCurrentFtp());
   const zi=smoothed.map(v=>{const idx=zones.findIndex(z=>v>=z.min&&v<z.max);return idx<0?zones.length-1:idx;});
   // rozděl na hrubé úseky podle zóny
@@ -1191,10 +1193,14 @@ function detectRideStructure(sd,ftp){
       if(i<n){curZ=zi[i];segStart=i;}
     }
   }
-  // sluč krátké/šumové úseky (<40s) se sousedním delším úsekem
-  const minSegSec=40;let guard=0;
-  while(guard++<200){
-    let idx=segs.findIndex(s=>((t[s.endI]-t[s.startI])+dt)<minSegSec);
+  // sluč krátké/šumové úseky se sousedním delším úsekem — práh je ZÓNOVĚ ZÁVISLÝ:
+  // Z1-Z4 mají vyšší práh (90s), protože krátké výkyvy tam bývají terénní šum (kopec, refýlek);
+  // Z5 VO2max a Z6 Anaerobní mají nízký práh (12s), protože skutečné mikro-bursty (Lactate Shuttle,
+  // krátké VO2max špičky) jsou záměrně krátké a nechceme je smazat/rozředit do sousední zóny
+  const minSegSecFor=zoneIdx=>zoneIdx>=4?12:90;
+  let guard=0;const guardMax=segs.length*2+50;
+  while(guard++<guardMax){
+    let idx=segs.findIndex(s=>((t[s.endI]-t[s.startI])+dt)<minSegSecFor(s.zone));
     if(idx<0||segs.length<=1)break;
     if(idx===0){segs[1].startI=segs[0].startI;segs.splice(0,1);}
     else{segs[idx-1].endI=segs[idx].endI;segs.splice(idx,1);}
@@ -1246,6 +1252,26 @@ function summarizeRideStructure(stats,ftp){
     return `Jízda nemá jasně opakovanou intervalovou strukturu (spíš vytrvalostní/terénní ráz), rozložení podle zón: ${pctLine}.`;
   }
   return lines.join("\n");
+}
+// ── NÁZEV JÍZDY JAKO NÁPOVĚDA ZÁMĚRU (doplněk k detekci ze streamu) ─────────────
+// Strava/Zwift generují název jízdy automaticky ("Morning Ride" apod.) pro volné vyjížďky.
+// Pokud sportovec (nebo AI trenér) do názvu dá typ tréninku (SST 3x20, VO2max 5x4, Závod...),
+// použijeme to jako nápovědu ZÁMĚRU pro AI hodnocení — detekce struktury ze streamu pak
+// nezávisle ověří, jak se záměr reálně povedl splnit. Jedno bez druhého nestačí:
+// název bez ověření provedení by AI jen slepě opakovala, detekce bez záměru nepozná "proč".
+const GENERIC_RIDE_NAME_RE=/^(early morning|morning|lunch|afternoon|evening|night)\s+ride$/i;
+const RACE_RIDE_NAME_RE=/závod|race\b/i;
+function classifyRideName(name){
+  const n=(name||"").trim();
+  if(!n||GENERIC_RIDE_NAME_RE.test(n))return{type:"generic"};
+  if(RACE_RIDE_NAME_RE.test(n))return{type:"race",label:n};
+  return{type:"structured",label:n};
+}
+function rideNameHint(name){
+  const c=classifyRideName(name);
+  if(c.type==="generic")return "Automaticky generovaný název jízdy (bez konkrétního záměru) — hodnoť jako obecnou/volnou vyjížďku, neočekávej striktní intervalovou strukturu.";
+  if(c.type==="race")return `Název naznačuje ZÁVOD ("${c.label}") — hodnoť jinak než trénink: zaměř se na peak power, pacing a taktiku, ne na dodržení tréninkových zón.`;
+  return `Název naznačuje ZAMÝŠLENÝ typ tréninku: "${c.label}" — ověř, zda se shoduje s detekovanou strukturou a wattami níže; pokud ne, výslovně to okomentuj jako nesoulad mezi plánem a provedením.`;
 }
 function calcNP(wArr,dt){
   if(!wArr||!wArr.length)return 0;
@@ -2008,7 +2034,7 @@ async function askCoach(){
 
 function setQ(q){const el=document.getElementById("ai-q");if(el)el.value=q;}
 
-const AUTO_RIDE_ANALYSIS_PROMPT="Zhodnoť přiloženou jízdu (případně jízdy) do detailu. Nejprve rozpoznej a stručně popiš STRUKTURU tréninku (rozcvička, jednotlivé intervaly/série - kolik opakování, jak dlouhé, v jaké zóně a wattech, odpočinky mezi nimi, závěr) na základě dat níže — pokud je u jízdy uvedená 'Detekovaná struktura', vycházej z ní a interpretuj ji (např. 3x20min SST, 6x5min VO2max apod.). Pak zhodnoť PROVEDENÍ: jak přesně jsem plnil cílové watty v jednotlivých úsecích, jak se vyvíjel poměr výkon/tep (W/TF) v čase (klesající výkon při stejném/rostoucím tepu = únava, tzv. decoupling), a jestli kadence odpovídala danému typu úseku. Nakonec posuď, jestli moje aktuálně nastavené FTP odpovídá realitě této jízdy — je poddimenzované (jízda byla nečekaně lehká, TF byla nízká, dokázal jsem výrazně překonat cílové zóny) nebo naopak nastřelené moc vysoko (nedokázal jsem splnit cílové watty, TF byla nepřiměřeně vysoká, výkon k závěru padal)? Odpověz konkrétně a věcně, žádné obecné fráze, a navrhni case-by-case další kroky.";
+const AUTO_RIDE_ANALYSIS_PROMPT="Zhodnoť přiloženou jízdu (případně jízdy) do detailu. Nejprve se podívej na pole 'Záměr dle názvu' — říká ti, jestli šlo o volnou vyjížďku (žádný konkrétní záměr, nehodnoť to jako intervalový trénink), pojmenovaný trénink (má konkrétní očekávanou strukturu — ověř, zda se detekovaná struktura/výkon s ní shoduje, a nesoulad výslovně okomentuj), nebo závod (jiná kritéria hodnocení, ne tréninkové zóny). Podle toho popiš STRUKTURU tréninku (rozcvička, jednotlivé intervaly/série - kolik opakování, jak dlouhé, v jaké zóně a wattech, odpočinky mezi nimi, závěr) na základě dat níže — pokud je u jízdy uvedená 'Detekovaná struktura', vycházej z ní a interpretuj ji (např. 3x20min SST, 6x5min VO2max apod.). Pak zhodnoť PROVEDENÍ: jak přesně jsem plnil cílové watty v jednotlivých úsecích, jak se vyvíjel poměr výkon/tep (W/TF) v čase (klesající výkon při stejném/rostoucím tepu = únava, tzv. decoupling), a jestli kadence odpovídala danému typu úseku. Nakonec posuď, jestli moje aktuálně nastavené FTP odpovídá realitě této jízdy — je poddimenzované (jízda byla nečekaně lehká, TF byla nízká, dokázal jsem výrazně překonat cílové zóny) nebo naopak nastřelené moc vysoko (nedokázal jsem splnit cílové watty, TF byla nepřiměřeně vysoká, výkon k závěru padal)? Odpověz konkrétně a věcně, žádné obecné fráze, a navrhni case-by-case další kroky.";
 const AUTO_RIDE_COMPARISON_SUFFIX="\n\nPřiložil jsem více jízd najednou — kromě rozboru každé jízdy zvlášť je na závěr výslovně POROVNEJ mezi sebou (ideálně jde o stejný/podobný typ tréninku opakovaný v čase): jak se mění výkon při podobné TF (zlepšení/zhoršení aerobní kondice), jak se mění schopnost udržet cílové watty ve stejných úsecích, vývoj kadence, a jestli data ukazují na potřebu upravit FTP nebo strukturu tréninku.";
 
 async function askAI(){
@@ -2027,7 +2053,7 @@ async function askAI(){
   if(autoMode&&rb0)rb0.innerHTML=`<div style="text-align:center;padding:16px;color:#64748b;font-size:13px">⏳ Trenér rozebírá ${aiRideCtx.length>1?"a porovnává jízdy":"strukturu a provedení jízdy"}...</div>`;
 
   const ridesCtx=aiRideCtx.length>0
-    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km`+
+    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km\n  Záměr dle názvu: ${rideNameHint(r.name)}`+
         (r.structure&&r.structure!=="loading"?`\n  Detekovaná struktura (automaticky z power/TF/kadence dat):\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"")).join("\n")
     : "";
   const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${effectiveTss(r)}`).join(" | ");
