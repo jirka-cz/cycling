@@ -1077,19 +1077,48 @@ function copyId(id,name,date,watts,hr,tss,km){
   }).catch(()=>{alert("Zkopíruj ručně: "+txt);});
 }
 
-function addToAI(id,name,date,watts,hr,tss,km){
-  const info={id,name,date,watts,hr,tss,km};
-  if(!aiRideCtx.find(r=>r.id===id)) aiRideCtx.push(info);
-  showTab("ai");
-  setTimeout(()=>{
-    const el=document.getElementById("ai-ctx-info");
-    if(el){el.innerHTML=aiRideCtx.map(r=>`<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">
-      🚴 ${r.name} (${r.date}) <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button>
-    </span>`).join("");}
-  },100);
+function ctxRideSpan(r){
+  const badge=r.structure==="loading"?' <span style="color:#64748b" title="Analyzuji strukturu…">⏳</span>'
+    :(r.structure?' <span style="color:#34d399" title="Struktura jízdy rozpoznána">📊</span>':"");
+  return `<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">
+    🚴 ${r.name} (${r.date})${badge} <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button>
+  </span>`;
+}
+function renderAICtx(){
+  const el=document.getElementById("ai-ctx-info");
+  if(el)el.innerHTML=aiRideCtx.map(ctxRideSpan).join("");
 }
 
-function removeAIRide(id){aiRideCtx=aiRideCtx.filter(r=>r.id!==id);const el=document.getElementById("ai-ctx-info");if(el)el.innerHTML=aiRideCtx.map(r=>`<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">🚴 ${r.name} (${r.date}) <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button></span>`).join("");}
+async function addToAI(id,name,date,watts,hr,tss,km){
+  let entry=aiRideCtx.find(r=>r.id===id);
+  if(!entry){entry={id,name,date,watts,hr,tss,km,structure:null};aiRideCtx.push(entry);}
+  showTab("ai");
+  setTimeout(renderAICtx,100);
+
+  // pokus se automaticky stáhnout detail jízdy a rozpoznat její strukturu (intervaly),
+  // aby AI trenér mohl posoudit i provedení jednotlivých úseků, ne jen průměry
+  if(entry.structure===null){
+    entry.structure="loading";
+    setTimeout(renderAICtx,100);
+    try{
+      let sd=getRideStreams(id);
+      if(!sd){
+        const token=await getToken();
+        if(token){
+          sd=await fetchRideStreamsFromStrava(token,{id});
+          if(sd)saveRideStreams(id,sd);
+        }
+      }
+      const stats=sd?detectRideStructure(sd,getCurrentFtp()):null;
+      entry.structure=stats?summarizeRideStructure(stats,getCurrentFtp()):"";
+    }catch(e){
+      entry.structure="";
+    }
+    renderAICtx();
+  }
+}
+
+function removeAIRide(id){aiRideCtx=aiRideCtx.filter(r=>r.id!==id);renderAICtx();}
 
 // ── DETAIL JÍZDY (časová osa, výkon/TF/kadence/výška, zóny, best efforty) ──────
 function fmtClock(totalSec){
@@ -1124,6 +1153,99 @@ function buildStreamSeries(sd){
   const arr=new Array(n);
   for(let i=0;i<n;i++)arr[i]={label:fmtClock(t[i]),t:t[i],w:w[i]||0,hr:hr[i]||0,cad:cad[i]||0,alt:alt[i]||0};
   return arr;
+}
+// ── AUTOMATICKÁ DETEKCE STRUKTURY JÍZDY (pro AI analýzu) ────────────────────────
+// Z power/TF/kadence streamu rozpozná úseky (rozcvička, intervaly, odpočinky,
+// vyjetí) podle zón odvozených z FTP a poskládá je do čitelného textového shrnutí,
+// které se pak posílá AI trenérovi jako kontext k analýze provedení tréninku.
+function fmtMinSec(sec){
+  sec=Math.max(0,Math.round(sec));
+  const m=Math.floor(sec/60),s=sec%60;
+  return s>0?`${m}:${String(s).padStart(2,"0")}`:`${m}min`;
+}
+function smoothArr(arr,windowSec,dt){
+  const win=Math.max(1,Math.round(windowSec/(dt||1)));
+  const out=new Array(arr.length);
+  let sum=0;
+  for(let i=0;i<arr.length;i++){
+    sum+=arr[i]||0;
+    if(i>=win)sum-=arr[i-win]||0;
+    out[i]=sum/Math.min(i+1,win);
+  }
+  return out;
+}
+function detectRideStructure(sd,ftp){
+  const t=sd.t||[],wRaw=sd.w||[];
+  const n=t.length;
+  if(n<10||!wRaw.length)return null;
+  const hr=sd.hr||[],cad=sd.cad||[];
+  const dt=(t[n-1]-t[0])/(n-1||1)||1;
+  const smoothed=smoothArr(wRaw.map(x=>x||0),15,dt);
+  const zones=getZones(ftp||getCurrentFtp());
+  const zi=smoothed.map(v=>{const idx=zones.findIndex(z=>v>=z.min&&v<z.max);return idx<0?zones.length-1:idx;});
+  // rozděl na hrubé úseky podle zóny
+  let segs=[];let curZ=zi[0],segStart=0;
+  for(let i=1;i<=n;i++){
+    if(i===n||zi[i]!==curZ){
+      segs.push({startI:segStart,endI:i-1,zone:curZ});
+      if(i<n){curZ=zi[i];segStart=i;}
+    }
+  }
+  // sluč krátké/šumové úseky (<40s) se sousedním delším úsekem
+  const minSegSec=40;let guard=0;
+  while(guard++<200){
+    let idx=segs.findIndex(s=>((t[s.endI]-t[s.startI])+dt)<minSegSec);
+    if(idx<0||segs.length<=1)break;
+    if(idx===0){segs[1].startI=segs[0].startI;segs.splice(0,1);}
+    else{segs[idx-1].endI=segs[idx].endI;segs.splice(idx,1);}
+  }
+  const zonesRef=zones;
+  const stats=segs.map(s=>{
+    let sw=0,shr=0,scad=0,hrc=0,cadc=0,cnt=0;
+    for(let i=s.startI;i<=s.endI;i++){sw+=wRaw[i]||0;cnt++;if(hr[i]){shr+=hr[i];hrc++;}if(cad[i]&&cad[i]>20){scad+=cad[i];cadc++;}}
+    const avgW=Math.round(sw/(cnt||1));
+    const z=zonesRef[s.zone];
+    return {
+      durSec:Math.round((t[s.endI]-t[s.startI])+dt),
+      avgW, avgHR:hrc?Math.round(shr/hrc):null, avgCad:cadc?Math.round(scad/cadc):null,
+      zone:z.z, zoneName:z.n, pctFtp:ftp?Math.round(avgW/ftp*100):null
+    };
+  });
+  return stats;
+}
+function summarizeRideStructure(stats,ftp){
+  if(!stats||!stats.length)return "";
+  const lines=[];let i=0;
+  while(i<stats.length){
+    const cur=stats[i];
+    if(i+1<stats.length){
+      const rest=stats[i+1];
+      let reps=1,j=i+2;
+      while(j+1<stats.length &&
+        Math.abs(stats[j].durSec-cur.durSec)/cur.durSec<0.3 && stats[j].zone===cur.zone &&
+        Math.abs(stats[j+1].durSec-rest.durSec)/Math.max(rest.durSec,1)<0.4 && stats[j+1].zone===rest.zone){
+        reps++;j+=2;
+      }
+      if(j<stats.length && Math.abs(stats[j].durSec-cur.durSec)/cur.durSec<0.3 && stats[j].zone===cur.zone){reps++;j+=1;}
+      if(reps>=2 && cur.zone!=="Z1" && cur.zone!=="Z2"){
+        lines.push(`${reps}x ${fmtMinSec(cur.durSec)} @ ~${cur.avgW}W (${cur.pctFtp!=null?cur.pctFtp+"% FTP, ":""}${cur.zone}-${cur.zoneName})${cur.avgHR?`, TF ~${cur.avgHR}bpm`:""}${cur.avgCad?`, kadence ~${cur.avgCad}`:""} · odpočinek ${fmtMinSec(rest.durSec)} @ ~${rest.avgW}W (${rest.zone})`);
+        i=j;continue;
+      }
+    }
+    const label=i===0?"Rozcvička":(i===stats.length-1?"Závěr/vyjetí":"Úsek");
+    lines.push(`${label}: ${fmtMinSec(cur.durSec)} @ ${cur.avgW}W (${cur.pctFtp!=null?cur.pctFtp+"% FTP, ":""}${cur.zone}-${cur.zoneName})${cur.avgHR?`, TF ${cur.avgHR}bpm`:""}${cur.avgCad?`, kadence ${cur.avgCad}`:""}`);
+    i++;
+  }
+  // pokud je úseků moc (nestrukturovaná/terénní jízda), radši shrň jen rozložení podle zón
+  if(lines.length>18){
+    const total=stats.reduce((a,s)=>a+s.durSec,0)||1;
+    const byZone={};
+    stats.forEach(s=>{byZone[s.zone]=(byZone[s.zone]||0)+s.durSec;});
+    const zoneNames={Z1:"Regenerace",Z2:"Aerobní",Z3:"Tempo",Z4:"Práh/SST",Z5:"VO2max",Z6:"Anaerobní"};
+    const pctLine=Object.keys(zoneNames).filter(z=>byZone[z]).map(z=>`${z} ${zoneNames[z]} ${Math.round(byZone[z]/total*100)}%`).join(", ");
+    return `Jízda nemá jasně opakovanou intervalovou strukturu (spíš vytrvalostní/terénní ráz), rozložení podle zón: ${pctLine}.`;
+  }
+  return lines.join("\n");
 }
 function calcNP(wArr,dt){
   if(!wArr||!wArr.length)return 0;
@@ -1794,9 +1916,8 @@ function renderAI(){
   const workerSet=!!S.workerUrl;
   const ctxHtml=aiRideCtx.length>0?`
     <div style="font-size:11px;color:#64748b;margin-bottom:4px">Přidané jízdy k analýze:</div>
-    <div id="ai-ctx-info">${aiRideCtx.map(r=>`<span style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px;display:inline-block">
-      🚴 ${r.name} (${r.date}) <button onclick="removeAIRide('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px">✕</button>
-    </span>`).join("")}</div>`:`<div id="ai-ctx-info"></div>`;
+    <div id="ai-ctx-info">${aiRideCtx.map(ctxRideSpan).join("")}</div>
+    <div style="font-size:10px;color:#475569;margin-top:4px">💡 Necháš-li dotaz prázdný a klikneš na „Zeptat se trenéra", automaticky vyhodnotí strukturu a provedení jízdy${aiRideCtx.length>1?" a porovná přidané jízdy mezi sebou":""}.</div>`:`<div id="ai-ctx-info"></div>`;
 
   return `
   <div class="card">
@@ -1887,17 +2008,27 @@ async function askCoach(){
 
 function setQ(q){const el=document.getElementById("ai-q");if(el)el.value=q;}
 
+const AUTO_RIDE_ANALYSIS_PROMPT="Zhodnoť přiloženou jízdu (případně jízdy) do detailu. Nejprve rozpoznej a stručně popiš STRUKTURU tréninku (rozcvička, jednotlivé intervaly/série - kolik opakování, jak dlouhé, v jaké zóně a wattech, odpočinky mezi nimi, závěr) na základě dat níže — pokud je u jízdy uvedená 'Detekovaná struktura', vycházej z ní a interpretuj ji (např. 3x20min SST, 6x5min VO2max apod.). Pak zhodnoť PROVEDENÍ: jak přesně jsem plnil cílové watty v jednotlivých úsecích, jak se vyvíjel poměr výkon/tep (W/TF) v čase (klesající výkon při stejném/rostoucím tepu = únava, tzv. decoupling), a jestli kadence odpovídala danému typu úseku. Nakonec posuď, jestli moje aktuálně nastavené FTP odpovídá realitě této jízdy — je poddimenzované (jízda byla nečekaně lehká, TF byla nízká, dokázal jsem výrazně překonat cílové zóny) nebo naopak nastřelené moc vysoko (nedokázal jsem splnit cílové watty, TF byla nepřiměřeně vysoká, výkon k závěru padal)? Odpověz konkrétně a věcně, žádné obecné fráze, a navrhni case-by-case další kroky.";
+const AUTO_RIDE_COMPARISON_SUFFIX="\n\nPřiložil jsem více jízd najednou — kromě rozboru každé jízdy zvlášť je na závěr výslovně POROVNEJ mezi sebou (ideálně jde o stejný/podobný typ tréninku opakovaný v čase): jak se mění výkon při podobné TF (zlepšení/zhoršení aerobní kondice), jak se mění schopnost udržet cílové watty ve stejných úsecích, vývoj kadence, a jestli data ukazují na potřebu upravit FTP nebo strukturu tréninku.";
+
 async function askAI(){
   if(aiLoading)return;
-  const q=document.getElementById("ai-q")?.value?.trim();
-  if(!q)return;
+  let q=document.getElementById("ai-q")?.value?.trim();
+  const autoMode=!q && aiRideCtx.length>0;
+  if(!q){
+    if(aiRideCtx.length===0)return;
+    q=AUTO_RIDE_ANALYSIS_PROMPT+(aiRideCtx.length>1?AUTO_RIDE_COMPARISON_SUFFIX:"");
+  }
   if(!S.workerUrl){alert("Nastav Cloudflare Worker URL v Admin sekci!");return;}
   aiLoading=true;
   const btn=document.getElementById("ai-btn");
-  if(btn){btn.textContent="⏳ Analyzuji...";btn.style.background="#334155";}
+  if(btn){btn.textContent=autoMode?(aiRideCtx.length>1?"⏳ Analyzuji a porovnávám jízdy...":"⏳ Analyzuji strukturu a provedení jízdy..."):"⏳ Analyzuji...";btn.style.background="#334155";}
+  const rb0=document.getElementById("ai-response");
+  if(autoMode&&rb0)rb0.innerHTML=`<div style="text-align:center;padding:16px;color:#64748b;font-size:13px">⏳ Trenér rozebírá ${aiRideCtx.length>1?"a porovnává jízdy":"strukturu a provedení jízdy"}...</div>`;
 
   const ridesCtx=aiRideCtx.length>0
-    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km`).join("\n")
+    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km`+
+        (r.structure&&r.structure!=="loading"?`\n  Detekovaná struktura (automaticky z power/TF/kadence dat):\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"")).join("\n")
     : "";
   const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${effectiveTss(r)}`).join(" | ");
   const curFtp=getCurrentFtp();
@@ -1910,7 +2041,7 @@ async function askAI(){
     });
     const data=await res.json();
     const ans=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
-    const entry={q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
+    const entry={q:autoMode?(aiRideCtx.length>1?"📊 Automatická analýza a porovnání přidaných jízd":"📊 Automatická analýza přidané jízdy"):q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
