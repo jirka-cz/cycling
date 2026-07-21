@@ -1210,7 +1210,11 @@ function detectRideStructure(sd,ftp){
     let sw=0,shr=0,scad=0,hrc=0,cadc=0,cnt=0;
     for(let i=s.startI;i<=s.endI;i++){sw+=wRaw[i]||0;cnt++;if(hr[i]){shr+=hr[i];hrc++;}if(cad[i]&&cad[i]>20){scad+=cad[i];cadc++;}}
     const avgW=Math.round(sw/(cnt||1));
-    const z=zonesRef[s.zone];
+    // zóna se POČÍTÁ ZNOVA ze skutečného průměrného výkonu tohoto (už sloučeného) úseku —
+    // dřívější zděděná zóna z merge kroku výše mohla neodpovídat reálnému průměru po sloučení
+    // (to způsobovalo nesmysly typu "74% FTP, Z6-Anaerobní")
+    const zIdx=zonesRef.findIndex(zz=>avgW>=zz.min&&avgW<zz.max);
+    const z=zonesRef[zIdx<0?zonesRef.length-1:zIdx];
     return {
       durSec:Math.round((t[s.endI]-t[s.startI])+dt),
       avgW, avgHR:hrc?Math.round(shr/hrc):null, avgCad:cadc?Math.round(scad/cadc):null,
