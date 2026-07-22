@@ -139,6 +139,7 @@ let aiRideCtx=[];
 let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
 let TRAINING_PLANS=JSON.parse(localStorage.getItem("cyc_workouts")||"[]");
 let swapSourceId=null;
+let planWeekStart=localStorage.getItem("cyc_plan_week_start")||null;
 let detailRideId=null;
 let rideStreamsCache=JSON.parse(localStorage.getItem("cyc_ride_streams")||"{}");
 
@@ -336,6 +337,7 @@ async function syncRides(token,force=false) {
     localStorage.setItem("cyc_rides",JSON.stringify(RIDES));
     const ts=new Date().toLocaleString("cs-CZ",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
     localStorage.setItem("cyc_last_sync",ts);
+    autoMatchCompletedRides();
     recompute();updateHeader();showTab(currentTab);
     const n=newRides.filter(r=>!ids.has(r.id)).length;
     setSyncInfo(`✅ ${n} nových · celkem ${RIDES.length}`);
@@ -1264,10 +1266,23 @@ function summarizeRideStructure(stats,ftp){
 // použijeme to jako nápovědu ZÁMĚRU pro AI hodnocení — detekce struktury ze streamu pak
 // nezávisle ověří, jak se záměr reálně povedl splnit. Jedno bez druhého nestačí:
 // název bez ověření provedení by AI jen slepě opakovala, detekce bez záměru nepozná "proč".
+//
+// KONVENCE PRO PÁROVÁNÍ S TÝDENNÍM PLÁNEM: pokud název jízdy začíná "D<1-7>" nebo "Den <1-7>"
+// (např. "D3 VO2max 5x4" nebo "Den 3 VO2max 5x4"), appka si podle toho SAMA spáruje jízdu
+// s příslušným dnem v Tréninky, označí ho jako splněný a použije skutečnou délku/watty.
+// Tag se před klasifikací záměru odstraní, aby nerušil rozpoznání typu tréninku.
+const DAY_TAG_RE=/^\s*(?:d|den)\s*([1-7])(?![0-9])[\s:.\-–—]*/i;
+function extractRideDayTag(name){
+  const m=(name||"").match(DAY_TAG_RE);
+  return m?parseInt(m[1],10):null;
+}
+function stripDayTag(name){
+  return (name||"").replace(DAY_TAG_RE,"").trim();
+}
 const GENERIC_RIDE_NAME_RE=/^(early morning|morning|lunch|afternoon|evening|night)\s+ride$/i;
 const RACE_RIDE_NAME_RE=/závod|race\b/i;
 function classifyRideName(name){
-  const n=(name||"").trim();
+  const n=stripDayTag(name);
   if(!n||GENERIC_RIDE_NAME_RE.test(n))return{type:"generic"};
   if(RACE_RIDE_NAME_RE.test(n))return{type:"race",label:n};
   return{type:"structured",label:n};
@@ -1522,8 +1537,11 @@ function renderPlan() {
       ⚠️ Pro AI trenéra nastav Cloudflare Worker URL v Admin sekci.
       <button class="btn" onclick="showTab('admin')" style="background:#854d0e;padding:5px 12px;font-size:11px;margin-top:6px;width:100%">⚙️ Admin</button>
     </div>`:`
-    <button class="btn" id="plan-btn" onclick="loadPlan()" style="width:100%;background:linear-gradient(135deg,#1e40af,#1e3a8a);font-size:14px;padding:14px;margin-bottom:12px">
+    <button class="btn" id="plan-btn" onclick="loadPlan()" style="width:100%;background:linear-gradient(135deg,#1e40af,#1e3a8a);font-size:14px;padding:14px;margin-bottom:8px">
       🏋️ Načíst doporučení trenéra
+    </button>
+    <button class="btn" id="update-plan-btn" onclick="updatePlan()" style="width:100%;background:#334155;font-size:12px;padding:10px;margin-bottom:12px">
+      🔁 Aktualizovat týdenní plán
     </button>`}
 
     <div id="plan-output">${planCache?renderPlanOutput(planCache):""}</div>
@@ -1683,6 +1701,8 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     if(workouts&&workouts.length){
       TRAINING_PLANS=workouts;
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+      planWeekStart=new Date().toISOString().slice(0,10);
+      localStorage.setItem("cyc_plan_week_start",planWeekStart);
     }
     planCache=cleanText;
     localStorage.setItem("cyc_plan",JSON.stringify(cleanText));
@@ -1698,6 +1718,106 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
   if(btn){btn.textContent="🔄 Obnovit doporučení";btn.style.background="linear-gradient(135deg,#1e40af,#1e3a8a)";}
 }
 
+function todayDayNumber(){
+  if(!planWeekStart)return null;
+  const start=new Date(planWeekStart+"T00:00:00");
+  const now=new Date();
+  return Math.floor((now-start)/86400000)+1;
+}
+
+async function updatePlan(){
+  if(planLoading||!S.workerUrl)return;
+  if(!planWeekStart||!TRAINING_PLANS.length){
+    alert('Nejdřív vygeneruj celý týdenní plán tlačítkem "Načíst doporučení trenéra" — aktualizace potřebuje vědět, kdy tento týden začal.');
+    return;
+  }
+  const todayNum=todayDayNumber();
+  if(todayNum===null||todayNum<1||todayNum>7){
+    alert("Uložený týdenní plán je mimo aktuální týden (starší než 7 dní) — vygeneruj prosím nový celý plán místo aktualizace.");
+    return;
+  }
+  planLoading=true;
+  const btn=document.getElementById("update-plan-btn");
+  if(btn){btn.textContent="⏳ Trenér kontroluje plán...";btn.style.background="#334155";}
+
+  autoMatchCompletedRides(); // ať máme co nejčerstvější spárování skutečných jízd s plánem
+
+  const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
+  const isRest=w=>w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+  const pastDays=sorted.filter(w=>(w.day_number||99)<todayNum);
+  const futureDays=sorted.filter(w=>(w.day_number||99)>=todayNum);
+  const pastSummary=pastDays.map(w=>{
+    const rest=isRest(w);
+    if(rest)return `Den ${w.day_number}: ${w.title||w.type}`;
+    const actual=w.completed&&w.actualDurationMin!=null
+      ? ` — ✅ SPLNĚNO (skutečně ${w.actualDurationMin} min${w.actualAvgW?`, ${w.actualAvgW}W avg`:""})`
+      : w.completed?" — ✅ SPLNĚNO":" — ❌ NESPLNĚNO/nezaznamenáno";
+    return `Den ${w.day_number}: ${w.title||w.type}${w.duration_min?` (plánováno ${w.duration_min} min)`:""}${actual}`;
+  }).join("\n")||"(žádné minulé dny v tomto týdnu)";
+  const futureSummary=futureDays.map(w=>`Den ${w.day_number}: ${w.title||w.type}${w.duration_min?`, ${w.duration_min} min`:""}`).join("\n")||"(žádné)";
+  // hodiny už odtrénované v tomto týdnu — přednostně ze SKUTEČNÉ délky spárované jízdy,
+  // jinak z plánované délky (fallback, pokud jízda nebyla oznatagovaná/spárovaná)
+  const minutesAlreadyDone=pastDays.filter(w=>!isRest(w)&&w.completed)
+    .reduce((s,w)=>s+(w.actualDurationMin!=null?w.actualDurationMin:(w.duration_min||0)),0);
+  const hoursAlreadyDone=Math.round((minutesAlreadyDone/6))/10;
+  const remainingTarget=Math.max(1,Math.round(((S.weeklyHours||8)-hoursAlreadyDone)*10)/10);
+
+  const weekRidesSince=RIDES.filter(r=>new Date(r.date)>=new Date(planWeekStart+"T00:00:00")).map(r=>
+    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${r.km}km`
+  ).join("\n")||"(žádné zaznamenané jízdy od začátku týdne)";
+
+  const curFtp=getCurrentFtp();
+  const prompt=`Tento týden začal ${planWeekStart}, dnes je Den ${todayNum} tohoto týdne (z 7).
+
+PROFIL SPORTOVCE:
+Jméno: ${S.name}
+Váha: ${S.weight}kg | FTP: ${curFtp}W | W/kg: ${(curFtp/S.weight).toFixed(2)}
+Cíl: ${S.goal}
+Zdravotní poznámky: ${S.notes||"žádné"}
+Časová kapacita TEĎ: ${S.weeklyHours||8}h/týden (může se lišit od kapacity, se kterou byl původní plán dělán — pokud ano, ber v potaz aktuální hodnotu)
+
+AKTUÁLNÍ FORMA:
+CTL: ${LATEST.ctl} | ATL: ${LATEST.atl} | TSB: ${LATEST.tsb}
+
+PŮVODNÍ PLÁN — DNY 1 až ${todayNum-1} (MINULOST, už proběhly):
+${pastSummary}
+
+PŮVODNÍ PLÁN — DNY ${todayNum} až 7 (BUDOUCNOST, tyto teď aktualizuj):
+${futureSummary}
+
+SKUTEČNÉ JÍZDY OD ZAČÁTKU TOHOTO TÝDNE (pro porovnání realita vs. plán):
+${weekRidesSince}
+
+Odhadem už bylo v tomto týdnu odtrénováno cca ${hoursAlreadyDone}h ze splněných dnů — zbývající cílový rozsah do konce týdne je tedy cca ${remainingTarget}h (ne celých ${S.weeklyHours||8}h znovu).
+
+ÚKOL: Zaktualizuj plán pro dny ${todayNum} až 7 s ohledem na to, co se v tomto týdnu reálně stalo (splněné/nesplněné tréninky, skutečný výkon oproti plánu) a na aktuální časovou kapacitu. Pokud dny 1 až ${todayNum-1} proběhly přesně podle plánu a kapacita se nezměnila, můžeš zbývající dny nechat stejné jako v původním plánu — ale i tak to napiš.`;
+
+  try{
+    const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({system:buildCoachSystemPrompt(true,todayNum,remainingTarget),messages:[{role:"user",content:prompt}]})});
+    const data=await res.json();
+    const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
+    const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
+    if(workouts&&workouts.length){
+      const keepPast=TRAINING_PLANS.filter(w=>(w.day_number||99)<todayNum);
+      const newFuture=workouts.filter(w=>(w.day_number||99)>=todayNum);
+      TRAINING_PLANS=[...keepPast,...newFuture];
+      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+    }
+    planCache=cleanText;
+    localStorage.setItem("cyc_plan",JSON.stringify(cleanText));
+    syncToCloud();
+    const out=document.getElementById("plan-output");
+    const truncWarning=truncated?`<div style="background:#3f1d0a;border:1px solid #92400e;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#fbbf24">⚠️ Odpověď od AI byla oříznutá — zkontroluj, jestli se zbývající dny uložily kompletně. Zvyš max_tokens v Cloudflare Workeru.</div>`:"";
+    if(out)out.innerHTML=renderPlanOutput(cleanText)+truncWarning+(workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:8px">🏋️ Zobrazit aktualizovaný plán v Tréninky</button>`:"");
+  }catch(e){
+    const out=document.getElementById("plan-output");
+    if(out)out.innerHTML=`<div style="color:#ef4444;font-size:12px;padding:10px">❌ Chyba: ${e.message}</div>`;
+  }
+  planLoading=false;
+  if(btn){btn.textContent="🔁 Aktualizovat týdenní plán";btn.style.background="#334155";}
+}
+
 // ── TRÉNINKY (strukturované workouty od trenéra) ───────────────────────────────
 function ftpPctToWatts(pctStr){
   const ftp=getCurrentFtp();
@@ -1707,6 +1827,32 @@ function ftpPctToWatts(pctStr){
   return `${Math.round(ftp*nums[0]/100)}–${Math.round(ftp*nums[1]/100)}W`;
 }
 
+// ── AUTOMATICKÉ PÁROVÁNÍ JÍZD S TÝDENNÍM PLÁNEM (podle "D<n>"/"Den n" tagu v názvu) ──
+function autoMatchCompletedRides(){
+  if(!planWeekStart||!TRAINING_PLANS.length)return false;
+  const weekStart=new Date(planWeekStart+"T00:00:00");
+  let changed=false;
+  TRAINING_PLANS.forEach(w=>{
+    const isRest=w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+    if(isRest||!w.day_number)return;
+    const match=RIDES.find(r=>extractRideDayTag(r.name)===w.day_number&&new Date(r.date)>=weekStart);
+    if(match){
+      const durMin=Math.round((match.dur||0)/60);
+      if(!w.completed||w.actualRideId!==match.id||w.actualDurationMin!==durMin||w.actualAvgW!==match.watts){
+        w.completed=true;
+        w.actualRideId=match.id;
+        w.actualDurationMin=durMin;
+        w.actualAvgW=match.watts;
+        changed=true;
+      }
+    }
+  });
+  if(changed){
+    localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+    syncToCloud();
+  }
+  return changed;
+}
 function typeColor(type){
   const t=(type||"").toLowerCase();
   if(t.includes("vo2")) return "#ef4444";
@@ -1741,7 +1887,7 @@ function cardClick(id){
       const a=TRAINING_PLANS.find(x=>x.id===swapSourceId);
       const b=TRAINING_PLANS.find(x=>x.id===id);
       if(a&&b){
-        const keys=["title","type","duration_min","phases","setup_tip","completed"];
+        const keys=["title","type","duration_min","phases","setup_tip","completed","actualRideId","actualDurationMin","actualAvgW"];
         const tmp={};keys.forEach(k=>tmp[k]=a[k]);
         keys.forEach(k=>a[k]=b[k]);
         keys.forEach(k=>b[k]=tmp[k]);
@@ -1830,7 +1976,7 @@ function renderTreninky(){
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
           <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?" · ✓ splněno":""}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?(w.actualDurationMin!=null?` · ✓ splněno (${w.actualDurationMin} min${w.actualAvgW?", "+w.actualAvgW+"W":""})`:" · ✓ splněno"):""}</div>
         </div>
         ${checkbox}
         ${moveBtn}
@@ -1848,6 +1994,7 @@ function renderTreninky(){
         <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} dní · watty přepočtené na aktuální FTP ${getCurrentFtp()}W</div>
       </div>
       <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
+      <button class="btn" onclick="autoMatchCompletedRides();showTab('treninky')" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">✓ Zkontrolovat jízdy</button>
     </div>
     <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:8px"></div>
   </div>
@@ -1861,7 +2008,8 @@ function renderTreninky(){
 }
 
 // ── AI TRENÉR ─────────────────────────────────────────────────────────────────
-function buildCoachSystemPrompt(includeWorkoutSchema){
+function buildCoachSystemPrompt(includeWorkoutSchema,updateFromDay,remainingHoursTarget){
+  const effWh=remainingHoursTarget!=null?remainingHoursTarget:(S.weeklyHours||8);
   const wh=S.weeklyHours||8;
   let timeGuidance;
   if(wh>=15){
@@ -1979,7 +2127,8 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
 ]
 ===END_WORKOUTS_JSON===
 
-Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna). Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.
+${updateFromDay?`Toto je AKTUALIZACE stávajícího týdne, ne nový plán od nuly. Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne ${updateFromDay} DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše. NEGENERUJ objekty pro dny před Dnem ${updateFromDay} — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly.`
+:`Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna). Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.`}
 
 TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
@@ -1987,12 +2136,13 @@ TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   prompt+=`
 ODPOVÍDEJ VŽDY (textová část je jen stručné shrnutí a doporučení — NIKDY neopakuj konkrétní watty, délky intervalů, počty opakování ani strukturu odpočinků, ty patří VÝHRADNĚ do JSON bloku výše a zobrazují se sportovci v záložce Tréninky):
 1. Krátké shrnutí aktuální formy a strategie tohoto týdne (3-4 věty) — na základě čeho jsi plán takto sestavil (CTL/ATL/TSB, cíl, časová kapacita)
-2. Přehled dní jako seznam "Den 1" až "Den 7", u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování dnů (jak v tomto přehledu, tak v JSON bloku výše) dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin za týden je ${wh}h — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z ${wh}h, tj. ${(wh*0.85).toFixed(1)}-${wh}h), ne jen "neprekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 3 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
-3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit)
+2. Přehled dní jako seznam "Den 1" až "Den 7"${updateFromDay?` (dny 1 až ${updateFromDay-1} jen zopakuj beze změny z dat od uživatele, u dnů ${updateFromDay}-7 popiš aktualizovaný obsah)`:""}, u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování ${updateFromDay?`zbývajících dnů (Den ${updateFromDay} až 7)`:"dnů"} dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin ${updateFromDay?`ZBÝVAJÍCÍ do konce týdne`:"za týden"} je ${effWh}h — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z ${effWh}h, tj. ${(effWh*0.85).toFixed(1)}-${effWh}h), ne jen "neprekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 3 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
+3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit)${updateFromDay?`
+4. CO SE ZMĚNILO oproti původnímu plánu pro dny ${updateFromDay} až 7 a PROČ — konkrétně, s odkazem na to, co se reálně stalo/nestalo (splněné/nesplněné tréninky, skutečný výkon) nebo na změnu časové kapacity. Pokud se nic nemění, napiš to i tak ("plán pro zbytek týdne zůstává beze změny, protože...").`:""}
 
 PŘED FINÁLNÍ ODPOVĚDÍ SI TICHO OVĚŘ (nedávej to do odpovědi, jen si to zkontroluj a případně oprav plán, než napíšeš JSON i text):
 (a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda. Pokud je uveden PŘEDCHOZÍ TÝDEN v datech níže, počítej do této kontroly i návaznost — pokud poslední den předchozího týdne byl intenzivní a splněný, nový Den 1 nesmí být zase intenzivní.
-(b) Sečti duration_min všech dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v rozsahu ${(wh*0.85).toFixed(1)}-${wh}h, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
+(b) Sečti duration_min všech ${updateFromDay?`ZBÝVAJÍCÍCH (Den ${updateFromDay}-7)`:""} dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v rozsahu ${(effWh*0.85).toFixed(1)}-${effWh}h, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
 Teprve po této kontrole vypiš finální JSON a text.
 Buď stručný a věcný, bez omáčky. Watty a délky nikam v textu nepiš — jsou jen v JSON.
 Odpovídej v češtině.`;
@@ -2097,6 +2247,8 @@ async function askCoach(){
     if(workouts&&workouts.length){
       TRAINING_PLANS=workouts;
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+      planWeekStart=new Date().toISOString().slice(0,10);
+      localStorage.setItem("cyc_plan_week_start",planWeekStart);
     }
     const entry={q:"📅 Denní plán trenéra",a:ans,ts:new Date().toLocaleTimeString("cs-CZ"),type:"coach"};
     aiHistory=[entry,...aiHistory].slice(0,10);
@@ -2195,7 +2347,7 @@ async function syncToCloud(){
       if(getData&&getData.value&&getData.value.pcCache)mergeRemotePcCache(getData.value.pcCache);
     }catch(e){}
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,workouts:TRAINING_PLANS,pcCache:pcCache(),ts}})});
+      body:JSON.stringify({action:"kv_set",key:"coach_sync",value:{aiHistory,settings:S,planCache,workouts:TRAINING_PLANS,planWeekStart,pcCache:pcCache(),ts}})});
     const raw=await res.text();
     if(!res.ok)throw new Error("HTTP "+res.status+": "+raw.slice(0,150));
     localStorage.setItem("cyc_ai_ts",String(ts));
@@ -2222,6 +2374,7 @@ async function syncFromCloud(silent){
       if(remote.settings){S={...S,...remote.settings,workerUrl:S.workerUrl};localStorage.setItem("cyc_s",JSON.stringify(S));}
       if(remote.planCache){planCache=remote.planCache;localStorage.setItem("cyc_plan",JSON.stringify(planCache));}
       if(remote.workouts){TRAINING_PLANS=remote.workouts;localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));}
+      if(remote.planWeekStart){planWeekStart=remote.planWeekStart;localStorage.setItem("cyc_plan_week_start",planWeekStart);}
       localStorage.setItem("cyc_ai_ts",String(remote.ts));
       recompute();updateHeader();
       if(currentTab==="ai"||currentTab==="admin"||currentTab==="plan"||currentTab==="treninky")showTab(currentTab);
