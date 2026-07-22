@@ -2498,8 +2498,10 @@ function renderAdmin(){
     </div>
 
     <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" onclick="refreshRecentRideNames()" style="flex:1;background:#166534;font-size:12px">🔄 Rychlá aktualizace (posledních 100 jízd)</button>
       <button class="btn" onclick="fullResyncAll()" style="flex:1;background:#334155;font-size:12px">🔄 Kompletní resync (doplní chybějící data)</button>
     </div>
+    <div style="font-size:10px;color:#64748b;margin-top:4px">Přejmenoval jsi jízdu na Stravě (např. přidal tag "D1")? Použij rychlou aktualizaci — je to jedna stránka dat, pár sekund, a přepíše i název/data u jízd, které už appka měla stažené. Kompletní resync stahuje celou historii a může trvat déle.</div>
     <button class="btn" onclick="recalcTssFromAuto()" style="background:#334155;margin-top:8px;width:100%;font-size:12px">🔁 Přepočítat uložené TSS podle auto historie</button>
   </div>`;
 }
@@ -2568,6 +2570,37 @@ function setFtpMode(mode){
   localStorage.setItem("cyc_s",JSON.stringify(S));
   recompute();updateHeader();
   showTab(currentTab);
+}
+async function refreshRecentRideNames(){
+  const t=await getToken();
+  if(!t){stravaLogin();return;}
+  setSyncInfo('<span style="color:#38bdf8">⏳ Aktualizuji posledních 100 jízd...</span>');
+  try{
+    const res=await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=100&page=1`,{headers:{Authorization:`Bearer ${t}`}});
+    if(!res.ok)throw new Error("Strava HTTP "+res.status+" — možná vypršel token, zkus 'Obnovit token a sync'");
+    const acts=await res.json();
+    if(!Array.isArray(acts))throw new Error("Strava nevrátila seznam jízd");
+    const cached=JSON.parse(localStorage.getItem("cyc_rides")||"[]");
+    const map={};cached.forEach(r=>map[r.id]=r);
+    let updatedNames=0,total=0;
+    acts.forEach(a=>{
+      if(!["Ride","VirtualRide"].includes(a.sport_type||a.type))return;
+      total++;
+      const id=String(a.id);
+      const fresh={id,name:a.name,date:(a.start_date_local||"").slice(0,10),
+        type:a.sport_type||a.type,watts:Math.round(a.average_watts||0),wavg:Math.round(a.weighted_average_watts||0),
+        hr:Math.round(a.average_heartrate||0),dur:a.moving_time||0,km:Math.round((a.distance||0)/100)/10,
+        elev:Math.round(a.total_elevation_gain||0),kcal:Math.round(a.calories||a.kilojoules||0),prs:a.pr_count||0};
+      if(map[id]&&map[id].name!==fresh.name)updatedNames++;
+      map[id]={...map[id],...fresh};
+    });
+    RIDES=Object.values(map);
+    RIDES.sort((a,b)=>b.date.localeCompare(a.date));
+    localStorage.setItem("cyc_rides",JSON.stringify(RIDES));
+    const matched=autoMatchCompletedRides();
+    recompute();updateHeader();showTab(currentTab);
+    setSyncInfo(`✅ Zkontrolováno ${total} jízd, ${updatedNames} přejmenováno${matched?", plán aktualizován":""}`);
+  }catch(e){setSyncInfo("❌ "+e.message);}
 }
 async function fullResyncAll(){
   if(!confirm("Znovu stáhnout kompletní historii ze Strava? U starších jízd tím doplníš chybějící data (Normalized Power) potřebná pro přesný auto-výpočet FTP. Může to chvíli trvat."))return;
