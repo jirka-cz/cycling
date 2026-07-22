@@ -138,6 +138,7 @@ let jizdyShown=30, jizdyObserver=null;
 let aiRideCtx=[];
 let planCache=JSON.parse(localStorage.getItem("cyc_plan")||"null");
 let TRAINING_PLANS=JSON.parse(localStorage.getItem("cyc_workouts")||"[]");
+let swapSourceId=null;
 let detailRideId=null;
 let rideStreamsCache=JSON.parse(localStorage.getItem("cyc_ride_streams")||"{}");
 
@@ -1622,6 +1623,20 @@ function renderPlanOutput(text) {
   return html;
 }
 
+function buildPrevWeekSummary(){
+  if(!TRAINING_PLANS.length)return null;
+  const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
+  const isRest=w=>w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+  const lines=sorted.map(w=>{
+    const rest=isRest(w);
+    const status=rest?"":(w.completed?"✅ splněno":"❌ nesplněno/nezaznamenáno");
+    return `Den ${w.day_number}: ${w.title||w.type||"?"}${status?` (${status})`:""}`;
+  });
+  const last=sorted[sorted.length-1];
+  const lastHardDone=last&&!isRest(last)&&last.completed;
+  const lastNote=lastHardDone?`\nPOZOR NA NÁVAZNOST: poslední den předchozího týdne (Den ${last.day_number}: ${last.title}) byl intenzivní a sportovec ho splnil — nový Den 1 tohoto týdne by po něm NEMĚL být zase intenzivní, dej tam volno nebo lehkou Z2 jízdu.`:"";
+  return lines.join("\n")+lastNote;
+}
 async function loadPlan() {
   if(planLoading||!S.workerUrl) return;
   planLoading=true;
@@ -1656,7 +1671,7 @@ POSLEDNÍCH 10 JÍZD:
 ${last10}
 
 Dnešní datum: ${new Date().toLocaleDateString("cs-CZ",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}
-
+${(()=>{const pw=buildPrevWeekSummary();return pw?`\nPŘEDCHOZÍ TÝDENNÍ PLÁN (pořadí dnů a jejich plnění — použij pro návaznost mezi týdny, zejména konec předchozího týdne vs. začátek nového):\n${pw}\n`:"";})()}
 Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, délky tréninků a zdůvodni každé doporučení fyziologicky.`;
 
   try{
@@ -1697,13 +1712,48 @@ function typeColor(type){
   if(t.includes("vo2")) return "#ef4444";
   if(t.includes("sst")||t.includes("sweet")) return "#fbbf24";
   if(t.includes("thresh")) return "#fb923c";
-  if(t.includes("recover")||t.includes("regen")) return "#34d399";
+  if(t.includes("rest")||t.includes("volno")||t.includes("recover")||t.includes("regen")) return "#34d399";
   return "#38bdf8";
 }
 
 function toggleWorkout(id){
   const el=document.getElementById("wk-"+id);
   if(el)el.classList.toggle("open");
+}
+
+function toggleCompleted(id){
+  const w=TRAINING_PLANS.find(x=>x.id===id);
+  if(!w)return;
+  w.completed=!w.completed;
+  localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+  syncToCloud();
+  showTab("treninky");
+}
+
+function startSwap(id){
+  swapSourceId=(swapSourceId===id)?null:id;
+  showTab("treninky");
+}
+
+function cardClick(id){
+  if(swapSourceId){
+    if(swapSourceId!==id){
+      const a=TRAINING_PLANS.find(x=>x.id===swapSourceId);
+      const b=TRAINING_PLANS.find(x=>x.id===id);
+      if(a&&b){
+        const keys=["title","type","duration_min","phases","setup_tip","completed"];
+        const tmp={};keys.forEach(k=>tmp[k]=a[k]);
+        keys.forEach(k=>a[k]=b[k]);
+        keys.forEach(k=>b[k]=tmp[k]);
+        localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+        syncToCloud();
+      }
+    }
+    swapSourceId=null;
+    showTab("treninky");
+  }else{
+    toggleWorkout(id);
+  }
 }
 
 function deleteWorkout(id){
@@ -1735,8 +1785,23 @@ function renderTreninky(){
     </div>`;
   }
   const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
+  const swapBanner=swapSourceId?`<div class="card" style="background:#1e1b3d;border-color:#a78bfa;padding:10px 14px;display:flex;justify-content:space-between;align-items:center">
+      <div style="font-size:12px;color:#e2e8f0">🔀 Klepni na den, kam chceš trénink přesunout</div>
+      <button class="btn" onclick="startSwap('${swapSourceId}')" style="width:auto;padding:6px 10px;font-size:11px;background:#334155">Zrušit</button>
+    </div>`:"";
   const cards=sorted.map(w=>{
+    const isRest=w.type==="rest"||/volno|regenerace/i.test(w.title||"");
     const color=typeColor(w.type);
+    const isSwapSource=swapSourceId===w.id;
+    const isSwapTarget=swapSourceId&&!isSwapSource;
+    const cardStyle=`border-left:3px solid ${color};padding:14px;cursor:pointer`+
+      (isSwapSource?";outline:2px solid #a78bfa;outline-offset:2px":"")+
+      (isSwapTarget?";box-shadow:0 0 0 1px #475569 inset":"");
+    const checkbox=!isRest?`<button onclick="event.stopPropagation();toggleCompleted('${w.id}')" title="Splněno"
+        style="width:26px;height:26px;border-radius:8px;border:2px solid ${w.completed?"#34d399":"#475569"};background:${w.completed?"#34d399":"transparent"};color:#0a0f1e;font-size:15px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:900">${w.completed?"✓":""}</button>`
+      :`<div style="width:26px;height:26px;flex-shrink:0"></div>`;
+    const moveBtn=`<button onclick="event.stopPropagation();startSwap('${w.id}')" title="Přesunout na jiný den"
+        style="width:26px;height:26px;border-radius:8px;border:1px solid #334155;background:transparent;color:#64748b;font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center">🔀</button>`;
     const phases=(w.phases||[]).map(p=>`
       <tr style="border-bottom:1px solid #1e293b">
         <td style="padding:6px 4px;font-size:11px;color:#e2e8f0">${p.phase}</td>
@@ -1744,15 +1809,7 @@ function renderTreninky(){
         <td style="padding:6px 4px;font-size:11px;color:#a78bfa;text-align:right">${p.ftp_pct||""}</td>
         <td style="padding:6px 4px;font-size:11px;color:#64748b;text-align:right">${ftpPctToWatts(p.ftp_pct)}</td>
       </tr>`).join("");
-    return `
-    <div class="card" id="wk-${w.id}" style="border-left:3px solid ${color};padding:14px">
-      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleWorkout('${w.id}')">
-        <div>
-          <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""} · ${w.duration_min?w.duration_min+" min":""}</div>
-        </div>
-        <span style="font-size:18px;color:#64748b" class="wk-chevron">▾</span>
-      </div>
+    const detail=isRest?"":`
       <div class="wk-detail" style="margin-top:10px">
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="border-bottom:1px solid #334155">
@@ -1767,7 +1824,19 @@ function renderTreninky(){
           <span style="color:#38bdf8;font-weight:700">⚙️ Nastavení Garmin/Zwift:</span> ${w.setup_tip}
         </div>`:""}
         <button class="btn" onclick="event.stopPropagation();deleteWorkout('${w.id}')" style="background:#7f1d1d;font-size:11px;padding:6px 10px;margin-top:10px;width:100%">🗑 Smazat trénink</button>
+      </div>`;
+    return `
+    <div class="card" id="wk-${w.id}" style="${cardStyle}" onclick="cardClick('${w.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?" · ✓ splněno":""}</div>
+        </div>
+        ${checkbox}
+        ${moveBtn}
+        ${!isRest?'<span style="font-size:18px;color:#64748b" class="wk-chevron">▾</span>':""}
       </div>
+      ${detail}
     </div>`;
   }).join("");
   return `
@@ -1776,12 +1845,13 @@ function renderTreninky(){
       <span style="font-size:28px">🏋️</span>
       <div style="flex:1">
         <div style="font-size:16px;font-weight:800;color:#a78bfa">Uložené tréninky</div>
-        <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} tréninků od trenéra · watty přepočtené na aktuální FTP ${getCurrentFtp()}W</div>
+        <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} dní · watty přepočtené na aktuální FTP ${getCurrentFtp()}W</div>
       </div>
       <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
     </div>
     <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:8px"></div>
   </div>
+  ${swapBanner}
   ${cards}
   <button class="btn" onclick="clearAllWorkouts()" style="width:100%;background:#334155;font-size:11px;margin-top:4px">🗑 Smazat vše</button>
   <style>
@@ -1854,7 +1924,7 @@ Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a =
 
 Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže):
 
-DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
+DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max, volno), ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
 
 ===WORKOUTS_JSON===
 [
@@ -1873,6 +1943,14 @@ DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony 
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
     "setup_tip": "Zwift/Garmin ERG mód: nastav 90% FTP na intervaly, 45% na odpočinek. Pokud nemáš ERG, jeď podle wattmetru na Sweet Spot zóně."
+  },
+  {
+    "day_number": 2,
+    "title": "Volno",
+    "type": "rest",
+    "duration_min": 0,
+    "phases": [],
+    "setup_tip": null
   },
   {
     "day_number": 3,
@@ -1901,7 +1979,7 @@ DŮLEŽITÉ: Níže jsou DVA ILUSTRAČNÍ příklady JSON FORMÁTU, ne šablony 
 ]
 ===END_WORKOUTS_JSON===
 
-Vygeneruj JEDEN objekt v poli pro každý navržený trénink z bodu 2 níže (ne pro odpočinkové/volné dny bez tréninku). Řaď je v poli podle "day_number" vzestupně. TOTO POLE MUSÍ OBSAHOVAT VŠECHNY navržené tréninkové dny z bodu 2 — ne jen první 1-2.
+Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna). Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.
 
 TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
@@ -1913,8 +1991,8 @@ ODPOVÍDEJ VŽDY (textová část je jen stručné shrnutí a doporučení — N
 3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit)
 
 PŘED FINÁLNÍ ODPOVĚDÍ SI TICHO OVĚŘ (nedávej to do odpovědi, jen si to zkontroluj a případně oprav plán, než napíšeš JSON i text):
-(a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda.
-(b) Sečti duration_min všech tréninkových dnů (kromě volna) a preveď na hodiny. Pokud součet nevychází v rozsahu ${(wh*0.85).toFixed(1)}-${wh}h, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
+(a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda. Pokud je uveden PŘEDCHOZÍ TÝDEN v datech níže, počítej do této kontroly i návaznost — pokud poslední den předchozího týdne byl intenzivní a splněný, nový Den 1 nesmí být zase intenzivní.
+(b) Sečti duration_min všech dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v rozsahu ${(wh*0.85).toFixed(1)}-${wh}h, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
 Teprve po této kontrole vypiš finální JSON a text.
 Buď stručný a věcný, bez omáčky. Watty a délky nikam v textu nepiš — jsou jen v JSON.
 Odpovídej v češtině.`;
@@ -2004,7 +2082,9 @@ async function askCoach(){
   if(rb)rb.innerHTML=`<div style="text-align:center;padding:20px;color:#64748b;font-size:13px">⏳ Trenér čte tvá data a připravuje plán...</div>`;
 
   const ctx=buildAthleteContext(14);
-  const q="Na základě mých dat sestav konkrétní tréninkový plán na příštích 7 dní. Pro každý den uveď: typ tréninku, délku, cílové watty (% FTP i absolutní), a stručné zdůvodnění. Zohledni mou aktuální únavu, zdravotní stav a dlouhodobé cíle.";
+  const pw=buildPrevWeekSummary();
+  const q="Na základě mých dat sestav konkrétní tréninkový plán na příštích 7 dní. Pro každý den uveď: typ tréninku, délku, cílové watty (% FTP i absolutní), a stručné zdůvodnění. Zohledni mou aktuální únavu, zdravotní stav a dlouhodobé cíle."+
+    (pw?`\n\nPŘEDCHOZÍ TÝDENNÍ PLÁN (pořadí dnů a jejich plnění — použij pro návaznost mezi týdny, zejména konec předchozího týdne vs. začátek nového):\n${pw}`:"");
 
   try{
     const res=await fetch(S.workerUrl,{
