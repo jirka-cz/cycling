@@ -1867,6 +1867,19 @@ Odhadem už bylo v tomto týdnu odtrénováno cca ${hoursAlreadyDone}h ze splně
 }
 
 // ── TRÉNINKY (strukturované workouty od trenéra) ───────────────────────────────
+function plannedAvgWatts(w){
+  if(!w.phases||!w.phases.length)return null;
+  const ftp=getCurrentFtp();
+  let totalW=0,totalMin=0;
+  w.phases.forEach(p=>{
+    const nums=(String(p.ftp_pct||"").match(/\d+(\.\d+)?/g)||[]).map(Number);
+    if(!nums.length||!p.duration_min)return;
+    const pct=nums.length===1?nums[0]:(nums[0]+nums[1])/2;
+    totalW+=(pct/100*ftp)*p.duration_min;
+    totalMin+=p.duration_min;
+  });
+  return totalMin?Math.round(totalW/totalMin):null;
+}
 function ftpPctToWatts(pctStr){
   const ftp=getCurrentFtp();
   const nums=(String(pctStr).match(/\d+(\.\d+)?/g)||[]).map(Number);
@@ -2052,7 +2065,12 @@ function renderTreninky(){
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
           <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}${w.date?` <span style="font-size:11px;font-weight:400;color:#64748b">(${new Date(w.date+"T00:00:00").toLocaleDateString("cs-CZ",{weekday:"short",day:"numeric",month:"numeric"})})</span>`:""}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?(w.actualDurationMin!=null?` · ✓ splněno (${w.actualDurationMin} min${w.actualAvgW?", "+w.actualAvgW+"W":""})`:" · ✓ splněno"):""}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?(w.actualDurationMin!=null?(()=>{
+            const planned=plannedAvgWatts(w);
+            const diff=(planned&&w.actualAvgW)?w.actualAvgW-planned:null;
+            const diffLabel=diff!=null?` <span style="color:${Math.abs(diff)<=8?"#34d399":diff<0?"#f59e0b":"#38bdf8"}">(${diff>0?"+":""}${diff}W vs. cíl ${planned}W)</span>`:"";
+            return ` · ✓ splněno (${w.actualDurationMin} min${w.actualAvgW?", "+w.actualAvgW+"W avg":""})${diffLabel}`;
+          })():" · ✓ splněno"):""}</div>
         </div>
         ${checkbox}
         ${moveBtn}
