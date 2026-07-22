@@ -1562,6 +1562,11 @@ function renderPlan() {
   </div>`;
 }
 
+function apiErrorText(data){
+  if(!data||!data.error)return null;
+  const e=data.error;
+  return "❌ Chyba API: "+(typeof e==="string"?e:(e.message||JSON.stringify(e)));
+}
 function cleanAIText(text){
   // levný model občas vyplivne náhodný cizí znak (CJK) uprostřed české věty – ořízneme
   return String(text).replace(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g,"").replace(/\r/g,"");
@@ -1696,7 +1701,7 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
-    const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
+    const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||"Chyba odpovědi (prázdný obsah, zkontroluj Network tab).");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
       planWeekStart=mondayOfWeek(new Date());
@@ -1844,7 +1849,7 @@ Odhadem už bylo v tomto týdnu odtrénováno cca ${hoursAlreadyDone}h ze splně
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({system:buildCoachSystemPrompt(true,todayNum,remainingTarget),messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
-    const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
+    const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||"Chyba odpovědi (prázdný obsah, zkontroluj Network tab).");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
       const keepPast=TRAINING_PLANS.filter(w=>(w.day_number||99)<todayNum);
@@ -2364,7 +2369,7 @@ async function askCoach(){
       body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
     });
     const data=await res.json();
-    const rawAns=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
+    const rawAns=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||JSON.stringify(data));
     const {text:ans,workouts,truncated}=extractWorkouts(rawAns);
     if(workouts&&workouts.length){
       planWeekStart=mondayOfWeek(new Date());
@@ -2378,7 +2383,7 @@ async function askCoach(){
     syncToCloud();
     const truncWarning=truncated?`<div style="background:#3f1d0a;border:1px solid #92400e;border-radius:8px;padding:10px;margin-top:10px;font-size:11px;color:#fbbf24">⚠️ Odpověď od AI byla oříznutá (limit délky odpovědi ve Workeru) — ${workouts&&workouts.length?`zachráněno ${workouts.length} kompletních tréninků, zbytek chybí`:"tréninky se nepodařilo načíst"}. Zvyš max_tokens v Cloudflare Workeru.</div>`:"";
     if(rb)rb.innerHTML=`<div style="background:#0a1628;border:1px solid #1e40af;border-radius:10px;padding:16px;margin-top:12px">
-      <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-4-6</div>
+      <div style="font-size:10px;color:#3b82f6;font-weight:700;margin-bottom:8px">🧠 PLÁN OD AI TRENÉRA · claude-sonnet-5</div>
       <div style="font-size:13px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap">${mdBold(ans)}</div>
       ${truncWarning}
       ${workouts&&workouts.length?`<button class="btn" onclick="showTab('treninky')" style="width:100%;background:#7c3aed;margin-top:10px">🏋️ Zobrazit ${workouts.length} tréninků v záložce Tréninky</button>`:""}
@@ -2424,13 +2429,13 @@ async function askAI(){
       body:JSON.stringify({system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
     });
     const data=await res.json();
-    const ans=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
+    const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||JSON.stringify(data));
     const entry={q:autoMode?(aiRideCtx.length>1?"📊 Automatická analýza a porovnání přidaných jízd":"📊 Automatická analýza přidané jízdy"):q,a:ans,ts:new Date().toLocaleTimeString("cs-CZ")};
     aiHistory=[entry,...aiHistory].slice(0,10);
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
     const rb=document.getElementById("ai-response");
-    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-4-6</div><div class="ai-text">${mdBold(ans)}</div></div>`;
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-5</div><div class="ai-text">${mdBold(ans)}</div></div>`;
   }catch(e){
     const rb=document.getElementById("ai-response");
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
