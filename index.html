@@ -1699,9 +1699,9 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
-      TRAINING_PLANS=workouts;
-      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       planWeekStart=new Date().toISOString().slice(0,10);
+      TRAINING_PLANS=stampPlanDates(workouts,planWeekStart);
+      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       localStorage.setItem("cyc_plan_week_start",planWeekStart);
     }
     planCache=cleanText;
@@ -1718,7 +1718,29 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
   if(btn){btn.textContent="🔄 Obnovit doporučení";btn.style.background="linear-gradient(135deg,#1e40af,#1e3a8a)";}
 }
 
+function ensurePlanDates(){
+  // doplní chybějící "date" pole u starších plánů (vytvořených před touto úpravou)
+  if(!planWeekStart)return false;
+  const start=new Date(planWeekStart+"T00:00:00");
+  let changed=false;
+  TRAINING_PLANS.forEach(w=>{
+    if(!w.date&&w.day_number){
+      w.date=new Date(start.getTime()+((w.day_number-1)*86400000)).toISOString().slice(0,10);
+      changed=true;
+    }
+  });
+  if(changed)localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+  return changed;
+}
+function stampPlanDates(workouts,weekStartISO){
+  const start=new Date(weekStartISO+"T00:00:00");
+  return workouts.map(w=>({...w,date:new Date(start.getTime()+(((w.day_number||1)-1)*86400000)).toISOString().slice(0,10)}));
+}
 function todayDayNumber(){
+  const todayISO=new Date().toISOString().slice(0,10);
+  ensurePlanDates();
+  const found=TRAINING_PLANS.find(w=>w.date===todayISO);
+  if(found)return found.day_number;
   if(!planWeekStart)return null;
   const start=new Date(planWeekStart+"T00:00:00");
   const now=new Date();
@@ -1748,13 +1770,14 @@ async function updatePlan(){
   const futureDays=sorted.filter(w=>(w.day_number||99)>=todayNum);
   const pastSummary=pastDays.map(w=>{
     const rest=isRest(w);
-    if(rest)return `Den ${w.day_number}: ${w.title||w.type}`;
+    const dateLabel=w.date?` (${w.date})`:"";
+    if(rest)return `Den ${w.day_number}${dateLabel}: ${w.title||w.type}`;
     const actual=w.completed&&w.actualDurationMin!=null
       ? ` — ✅ SPLNĚNO (skutečně ${w.actualDurationMin} min${w.actualAvgW?`, ${w.actualAvgW}W avg`:""})`
       : w.completed?" — ✅ SPLNĚNO":" — ❌ NESPLNĚNO/nezaznamenáno";
-    return `Den ${w.day_number}: ${w.title||w.type}${w.duration_min?` (plánováno ${w.duration_min} min)`:""}${actual}`;
+    return `Den ${w.day_number}${dateLabel}: ${w.title||w.type}${w.duration_min?` (plánováno ${w.duration_min} min)`:""}${actual}`;
   }).join("\n")||"(žádné minulé dny v tomto týdnu)";
-  const futureSummary=futureDays.map(w=>`Den ${w.day_number}: ${w.title||w.type}${w.duration_min?`, ${w.duration_min} min`:""}`).join("\n")||"(žádné)";
+  const futureSummary=futureDays.map(w=>`Den ${w.day_number}${w.date?` (${w.date})`:""}: ${w.title||w.type}${w.duration_min?`, ${w.duration_min} min`:""}`).join("\n")||"(žádné)";
   // hodiny už odtrénované v tomto týdnu — přednostně ze SKUTEČNÉ délky spárované jízdy,
   // jinak z plánované délky (fallback, pokud jízda nebyla oznatagovaná/spárovaná)
   const minutesAlreadyDone=pastDays.filter(w=>!isRest(w)&&w.completed)
@@ -1800,7 +1823,7 @@ Odhadem už bylo v tomto týdnu odtrénováno cca ${hoursAlreadyDone}h ze splně
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
       const keepPast=TRAINING_PLANS.filter(w=>(w.day_number||99)<todayNum);
-      const newFuture=workouts.filter(w=>(w.day_number||99)>=todayNum);
+      const newFuture=stampPlanDates(workouts.filter(w=>(w.day_number||99)>=todayNum),planWeekStart);
       TRAINING_PLANS=[...keepPast,...newFuture];
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
     }
@@ -1827,15 +1850,26 @@ function ftpPctToWatts(pctStr){
   return `${Math.round(ftp*nums[0]/100)}–${Math.round(ftp*nums[1]/100)}W`;
 }
 
-// ── AUTOMATICKÉ PÁROVÁNÍ JÍZD S TÝDENNÍM PLÁNEM (podle "D<n>"/"Den n" tagu v názvu) ──
+// ── AUTOMATICKÉ PÁROVÁNÍ JÍZD S TÝDENNÍM PLÁNEM ─────────────────────────────────
+// Primárně podle SKUTEČNÉHO DATA daného dne v plánu (jednoznačné, žádný drift).
+// "D<n>"/"Den n" tag v názvu jízdy slouží jen jako pojistka pro rozlišení, pokud by
+// ve stejný den bylo víc jízd (pak bez tagu radši nehádáme a necháme nespárováno).
 function autoMatchCompletedRides(){
-  if(!planWeekStart||!TRAINING_PLANS.length)return false;
-  const weekStart=new Date(planWeekStart+"T00:00:00");
+  if(!TRAINING_PLANS.length)return false;
+  ensurePlanDates();
   let changed=false;
   TRAINING_PLANS.forEach(w=>{
     const isRest=w.type==="rest"||/volno|regenerace/i.test(w.title||"");
-    if(isRest||!w.day_number)return;
-    const match=RIDES.find(r=>extractRideDayTag(r.name)===w.day_number&&new Date(r.date)>=weekStart);
+    if(isRest||!w.date)return;
+    const sameDate=RIDES.filter(r=>r.date===w.date);
+    let match=null;
+    if(sameDate.length===1){
+      match=sameDate[0];
+    }else if(sameDate.length>1){
+      const tagged=sameDate.filter(r=>extractRideDayTag(r.name)===w.day_number);
+      if(tagged.length===1)match=tagged[0]; // víc jízd ten den, ale jen jedna nese správný tag → jednoznačné
+      // jinak (0 nebo 2+ shod s tagem) radši nehádáme, necháme na ručním zaškrtnutí
+    }
     if(match){
       const durMin=Math.round((match.dur||0)/60);
       if(!w.completed||w.actualRideId!==match.id||w.actualDurationMin!==durMin||w.actualAvgW!==match.watts){
@@ -1887,11 +1921,16 @@ function cardClick(id){
       const a=TRAINING_PLANS.find(x=>x.id===swapSourceId);
       const b=TRAINING_PLANS.find(x=>x.id===id);
       if(a&&b){
-        const keys=["title","type","duration_min","phases","setup_tip","completed","actualRideId","actualDurationMin","actualAvgW"];
+        const keys=["title","type","duration_min","phases","setup_tip"];
         const tmp={};keys.forEach(k=>tmp[k]=a[k]);
         keys.forEach(k=>a[k]=b[k]);
         keys.forEach(k=>b[k]=tmp[k]);
+        // completed/actualní data se NEpřesouvají s obsahem — patří k pevnému datu daného
+        // dne, tak je po přehození obsahu přepočítáme znovu podle skutečných jízd na ta data
+        a.completed=false;a.actualRideId=null;a.actualDurationMin=null;a.actualAvgW=null;
+        b.completed=false;b.actualRideId=null;b.actualDurationMin=null;b.actualAvgW=null;
         localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+        autoMatchCompletedRides();
         syncToCloud();
       }
     }
@@ -1975,7 +2014,7 @@ function renderTreninky(){
     <div class="card" id="wk-${w.id}" style="${cardStyle}" onclick="cardClick('${w.id}')">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}</div>
+          <div style="font-size:14px;font-weight:800;color:${color}">${w.day_number?`Den ${w.day_number} · `:""}${w.title||"Trénink"}${w.date?` <span style="font-size:11px;font-weight:400;color:#64748b">(${new Date(w.date+"T00:00:00").toLocaleDateString("cs-CZ",{weekday:"short",day:"numeric",month:"numeric"})})</span>`:""}</div>
           <div style="font-size:11px;color:#64748b;margin-top:2px">${w.type||""}${w.duration_min?" · "+w.duration_min+" min":""}${w.completed?(w.actualDurationMin!=null?` · ✓ splněno (${w.actualDurationMin} min${w.actualAvgW?", "+w.actualAvgW+"W":""})`:" · ✓ splněno"):""}</div>
         </div>
         ${checkbox}
@@ -2245,9 +2284,9 @@ async function askCoach(){
     const rawAns=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
     const {text:ans,workouts,truncated}=extractWorkouts(rawAns);
     if(workouts&&workouts.length){
-      TRAINING_PLANS=workouts;
-      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       planWeekStart=new Date().toISOString().slice(0,10);
+      TRAINING_PLANS=stampPlanDates(workouts,planWeekStart);
+      localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       localStorage.setItem("cyc_plan_week_start",planWeekStart);
     }
     const entry={q:"📅 Denní plán trenéra",a:ans,ts:new Date().toLocaleTimeString("cs-CZ"),type:"coach"};
