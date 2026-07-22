@@ -2058,6 +2058,12 @@ function renderTreninky(){
         ${w.setup_tip?`<div style="background:#0f172a;border-radius:8px;padding:10px;margin-top:10px;font-size:11px;color:#94a3b8;line-height:1.6">
           <span style="color:#38bdf8;font-weight:700">⚙️ Nastavení Garmin/Zwift:</span> ${w.setup_tip}
         </div>`:""}
+        ${w.nutrition?`<div style="background:#0f1e14;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#94a3b8;line-height:1.6">
+          <span style="color:#34d399;font-weight:700">🥤 Výživa:</span>
+          ${w.nutrition.bottles?`${w.nutrition.bottles}× lahev · ${w.nutrition.mix1_scoops_per_bottle}⨯ směs 1 + ${w.nutrition.mix2_scoops_per_bottle}⨯ směs 2 (Vilgain) na lahev`:"voda stačí, bez směsi"}<br>
+          ${w.nutrition.recovery_mix?"✅ regenerační směs po tréninku":"— regenerační směs nutná není"}${w.nutrition.add_whey?" + syrovátka navíc":""}
+          ${w.nutrition.note?`<div style="color:#64748b;margin-top:4px;font-style:italic">${w.nutrition.note}</div>`:""}
+        </div>`:""}
         <button class="btn" onclick="event.stopPropagation();deleteWorkout('${w.id}')" style="background:#7f1d1d;font-size:11px;padding:6px 10px;margin-top:10px;width:100%">🗑 Smazat trénink</button>
       </div>`;
     return `
@@ -2161,6 +2167,21 @@ SPECIFIKA CYKLISTIKY:
 - Long rides v Z2 budují tukový metabolismus a mitochondriální hustotu
 - SST 3x15 nebo 2x20 min = páteř FTP budování pro amatéry
 - VO2max intervaly 6x3 min nebo 5x4 min = nejefektivnější formát pro časově limitované sportovce
+
+VÝŽIVA — SPORTOVEC MÁ VLASTNÍ SMĚSI, DOPORUČ POČET LAHVÍ A ODMĚREK PODLE DÉLKY/TYPU TRÉNINKU:
+Sportovec používá 950ml lahve a dvě vlastní směsi:
+- SMĚS 1 (odměrka 15g): maltodextrin:fruktóza:kyselina citronová:sůl v poměru 250:125:25:10 (2:1 maltodextrin:fruktóza — dobrý poměr pro vysoké vstřebávání sacharidů)
+- SMĚS 2 (odměrka 5g): hotové elektrolyty (sodík, draslík, hořčík, vápník)
+- Standardní recept: 3 odměrky směsi 1 + 2 odměrky směsi 2 na 950ml lahev (~47g sacharidů, ~860mg sodíku/lahev)
+Dávkovací pravidla podle délky tréninku (aplikuj na KAŽDÝ netréninkový den, kromě "rest"):
+- <45 min: žádná lahev/směs, stačí voda
+- 45-75 min: 1 lahev, standardní recept (3+2 odměrky)
+- 76-120 min: 1 lahev, 4 odměrky směsi 1 + 2 odměrky směsi 2 (o něco koncentrovanější, lahev musí vydržet déle)
+- 121-180 min: 2 lahve, standardní recept (3+2) v každé
+- >180 min: 2-3 lahve + pozn. že čistě nápojem se to nedá pokrýt, doporuč doplnit i tuhé jídlo (gel/banán)
+REGENERAČNÍ SMĚS PO TRÉNINKU: sportovec má samostatnou regenerační směs (maltodextrin, palatinóza, BCAA, L-glutamin, sůl) — doporuč ji užít (recovery_mix:true) u SST/threshold/VO2max/tempo tréninků a u Z2/endurance jízd ≥90 min; u kratších/lehkých jízd ne (recovery_mix:false, stačí normální jídlo).
+SYROVÁTKA NAVÍC: doporuč přidat syrovátkový protein (add_whey:true) když duration_min≥120 NEBO (typ je VO2max/threshold A duration_min≥60) — jinak add_whey:false.
+Do KAŽDÉHO netréninkového dne v JSON přidej pole "nutrition" podle schématu níže. U "rest" dnů nutrition vynech.
 `;
 
   if(includeWorkoutSchema){
@@ -2169,7 +2190,7 @@ FORMÁT ODPOVĚDI — ZÁVAZNÉ POŘADÍ: Odpověď MUSÍ začínat ROVNOU JSON 
 
 Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
 
-Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže):
+Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže; pole "nutrition" viz sekce VÝŽIVA výše, u "rest" dnů vynech):
 
 DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max, volno), ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
 
@@ -2189,7 +2210,8 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
       {"phase":"Interval 3","duration_min":20,"ftp_pct":"90%"},
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
-    "setup_tip": "Zwift/Garmin ERG mód: nastav 90% FTP na intervaly, 45% na odpočinek. Pokud nemáš ERG, jeď podle wattmetru na Sweet Spot zóně."
+    "setup_tip": "Zwift/Garmin ERG mód: nastav 90% FTP na intervaly, 45% na odpočinek. Pokud nemáš ERG, jeď podle wattmetru na Sweet Spot zóně.",
+    "nutrition": {"bottles": 1, "mix1_scoops_per_bottle": 4, "mix2_scoops_per_bottle": 2, "recovery_mix": true, "add_whey": false, "note": "90 min SST spadá do pásma 76-120 min → 1 lahev, o něco koncentrovanější recept."}
   },
   {
     "day_number": 2,
@@ -2221,13 +2243,14 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
       {"phase":"Interval 5","duration_min":4,"ftp_pct":"115%"},
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
-    "setup_tip": "Zwift/Garmin ERG mód: aktivační úseky i intervaly nastav dle % FTP výše. Aktivace před VO2max blokem urychlí nástup aerobního krytí a zkvalitní první interval."
+    "setup_tip": "Zwift/Garmin ERG mód: aktivační úseky i intervaly nastav dle % FTP výše. Aktivace před VO2max blokem urychlí nástup aerobního krytí a zkvalitní první interval.",
+    "nutrition": {"bottles": 1, "mix1_scoops_per_bottle": 3, "mix2_scoops_per_bottle": 2, "recovery_mix": true, "add_whey": true, "note": "60 min VO2max spadá do pásma 45-75 min → standardní recept; syrovátka navíc, protože jde o náročný VO2max trénink."}
   }
 ]
 ===END_WORKOUTS_JSON===
 
-${updateFromDay?`Toto je AKTUALIZACE stávajícího týdne, ne nový plán od nuly. Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne ${updateFromDay} DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše. NEGENERUJ objekty pro dny před Dnem ${updateFromDay} — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly.`
-:`Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna). Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.`}
+${updateFromDay?`Toto je AKTUALIZACE stávajícího týdne, ne nový plán od nuly. Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne ${updateFromDay} DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše (u "rest" dnů pole "nutrition" vynech). NEGENERUJ objekty pro dny před Dnem ${updateFromDay} — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly. U KAŽDÉHO netréninkového dne nezapomeň na pole "nutrition" podle sekce VÝŽIVA výše.`
+:`Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna), a pole "nutrition" u "rest" dnů vynech. U KAŽDÉHO netréninkového dne přidej pole "nutrition" podle sekce VÝŽIVA výše. Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.`}
 
 TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
