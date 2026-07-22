@@ -1699,7 +1699,7 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
     const ans=cleanAIText(data.content?.[0]?.text||"Chyba odpovědi.");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
     if(workouts&&workouts.length){
-      planWeekStart=new Date().toISOString().slice(0,10);
+      planWeekStart=mondayOfWeek(new Date());
       TRAINING_PLANS=stampPlanDates(workouts,planWeekStart);
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       localStorage.setItem("cyc_plan_week_start",planWeekStart);
@@ -1718,6 +1718,14 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
   if(btn){btn.textContent="🔄 Obnovit doporučení";btn.style.background="linear-gradient(135deg,#1e40af,#1e3a8a)";}
 }
 
+function mondayOfWeek(d){
+  const date=new Date(d);
+  const day=date.getDay(); // 0=neděle,1=pondělí,...,6=sobota
+  const diff=(day===0?-6:1-day); // kolik dní přičíst/odečíst, aby vyšlo pondělí téhož týdne
+  const monday=new Date(date);
+  monday.setDate(date.getDate()+diff);
+  return monday.toISOString().slice(0,10);
+}
 function ensurePlanDates(){
   // doplní chybějící "date" pole u starších plánů (vytvořených před touto úpravou)
   if(!planWeekStart)return false;
@@ -1854,6 +1862,17 @@ function ftpPctToWatts(pctStr){
 // Primárně podle SKUTEČNÉHO DATA daného dne v plánu (jednoznačné, žádný drift).
 // "D<n>"/"Den n" tag v názvu jízdy slouží jen jako pojistka pro rozlišení, pokud by
 // ve stejný den bylo víc jízd (pak bez tagu radši nehádáme a necháme nespárováno).
+function checkRideMatches(){
+  const changed=autoMatchCompletedRides();
+  showTab("treninky");
+  const nonRest=TRAINING_PLANS.filter(w=>!(w.type==="rest"||/volno|regenerace/i.test(w.title||"")));
+  const completedCount=nonRest.filter(w=>w.completed).length;
+  if(changed){
+    alert(`✅ Aktualizováno — ${completedCount}/${nonRest.length} tréninkových dnů je teď označeno jako splněno.`);
+  }else{
+    alert(`Žádné nové shody nenalezeny (aktuálně ${completedCount}/${nonRest.length} splněno).\n\nMožné důvody:\n• Jízda ještě nebyla stažená ze Strava — zkus v Admin "🔄 Rychlá aktualizace"\n• Datum jízdy na Stravě neodpovídá datu daného dne v plánu (vidíš ho v závorce u každé karty)\n• Ve stejný den je jízd víc a žádná (nebo víc než jedna) nemá na začátku názvu tag "D<číslo dne>"`);
+  }
+}
 function autoMatchCompletedRides(){
   if(!TRAINING_PLANS.length)return false;
   ensurePlanDates();
@@ -2033,7 +2052,7 @@ function renderTreninky(){
         <div style="font-size:11px;color:#64748b">${TRAINING_PLANS.length} dní · watty přepočtené na aktuální FTP ${getCurrentFtp()}W</div>
       </div>
       <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
-      <button class="btn" onclick="autoMatchCompletedRides();showTab('treninky')" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">✓ Zkontrolovat jízdy</button>
+      <button class="btn" onclick="checkRideMatches()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">✓ Zkontrolovat jízdy</button>
     </div>
     <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:8px"></div>
   </div>
@@ -2284,7 +2303,7 @@ async function askCoach(){
     const rawAns=cleanAIText(data.content?.[0]?.text||JSON.stringify(data));
     const {text:ans,workouts,truncated}=extractWorkouts(rawAns);
     if(workouts&&workouts.length){
-      planWeekStart=new Date().toISOString().slice(0,10);
+      planWeekStart=mondayOfWeek(new Date());
       TRAINING_PLANS=stampPlanDates(workouts,planWeekStart);
       localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
       localStorage.setItem("cyc_plan_week_start",planWeekStart);
