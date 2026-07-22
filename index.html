@@ -1718,22 +1718,29 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
   if(btn){btn.textContent="🔄 Obnovit doporučení";btn.style.background="linear-gradient(135deg,#1e40af,#1e3a8a)";}
 }
 
+// Bezpečné formátování LOKÁLNÍHO data na "YYYY-MM-DD" — NIKDY nepoužívej .toISOString()
+// pro tohle: ta vždy převádí na UTC, a v letním čase (UTC+2) by to posunulo půlnoc
+// o den zpátky (např. pondělí 20.7. 00:00 náš čas = 19.7. 22:00 UTC → špatné datum).
+function localISODate(dt){
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+}
+function addDaysLocal(isoDate,days){
+  const [y,m,d]=isoDate.split("-").map(Number);
+  return localISODate(new Date(y,m-1,d+days));
+}
 function mondayOfWeek(d){
   const date=new Date(d);
   const day=date.getDay(); // 0=neděle,1=pondělí,...,6=sobota
   const diff=(day===0?-6:1-day); // kolik dní přičíst/odečíst, aby vyšlo pondělí téhož týdne
-  const monday=new Date(date);
-  monday.setDate(date.getDate()+diff);
-  return monday.toISOString().slice(0,10);
+  return localISODate(new Date(date.getFullYear(),date.getMonth(),date.getDate()+diff));
 }
 function ensurePlanDates(){
   // doplní chybějící "date" pole u starších plánů (vytvořených před touto úpravou)
   if(!planWeekStart)return false;
-  const start=new Date(planWeekStart+"T00:00:00");
   let changed=false;
   TRAINING_PLANS.forEach(w=>{
     if(!w.date&&w.day_number){
-      w.date=new Date(start.getTime()+((w.day_number-1)*86400000)).toISOString().slice(0,10);
+      w.date=addDaysLocal(planWeekStart,w.day_number-1);
       changed=true;
     }
   });
@@ -1741,20 +1748,30 @@ function ensurePlanDates(){
   return changed;
 }
 function stampPlanDates(workouts,weekStartISO){
-  const start=new Date(weekStartISO+"T00:00:00");
-  return workouts.map(w=>({...w,date:new Date(start.getTime()+(((w.day_number||1)-1)*86400000)).toISOString().slice(0,10)}));
+  return workouts.map(w=>({...w,date:addDaysLocal(weekStartISO,(w.day_number||1)-1)}));
 }
 function todayDayNumber(){
-  const todayISO=new Date().toISOString().slice(0,10);
+  const todayISO=localISODate(new Date());
   ensurePlanDates();
   const found=TRAINING_PLANS.find(w=>w.date===todayISO);
   if(found)return found.day_number;
   if(!planWeekStart)return null;
-  const start=new Date(planWeekStart+"T00:00:00");
+  const [y,m,d]=planWeekStart.split("-").map(Number);
+  const start=new Date(y,m-1,d);
   const now=new Date();
-  return Math.floor((now-start)/86400000)+1;
+  const nowLocal=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  return Math.round((nowLocal-start)/86400000)+1;
 }
 
+function setPlanWeekStart(dateStr){
+  if(!dateStr||!/^\d{4}-\d{2}-\d{2}$/.test(dateStr))return;
+  planWeekStart=dateStr;
+  localStorage.setItem("cyc_plan_week_start",planWeekStart);
+  TRAINING_PLANS=TRAINING_PLANS.map(w=>({...w,date:w.day_number?addDaysLocal(planWeekStart,w.day_number-1):w.date}));
+  localStorage.setItem("cyc_workouts",JSON.stringify(TRAINING_PLANS));
+  syncToCloud();
+  checkRideMatches();
+}
 async function updatePlan(){
   if(planLoading||!S.workerUrl)return;
   if(!planWeekStart||!TRAINING_PLANS.length){
@@ -1976,6 +1993,7 @@ function clearAllWorkouts(){
 }
 
 function renderTreninky(){
+  ensurePlanDates();
   if(!TRAINING_PLANS.length){
     return `<div class="card" style="text-align:center;padding:40px 20px">
       <div style="font-size:40px;margin-bottom:12px">🏋️</div>
@@ -2053,6 +2071,11 @@ function renderTreninky(){
       </div>
       <button class="btn" onclick="syncFromCloud()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">🔄 Sync</button>
       <button class="btn" onclick="checkRideMatches()" style="background:#334155;font-size:11px;padding:6px 10px;width:auto">✓ Zkontrolovat jízdy</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:10px">
+      <span style="font-size:10px;color:#64748b;white-space:nowrap">Den 1 =</span>
+      <input type="date" id="week-start-input" value="${planWeekStart||""}" style="background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:11px;padding:4px 6px;flex:1">
+      <button class="btn" onclick="setPlanWeekStart(document.getElementById('week-start-input').value)" style="width:auto;padding:4px 10px;font-size:11px;background:#334155">Uložit</button>
     </div>
     <div class="sync-status-el" style="font-size:11px;color:#64748b;margin-top:8px"></div>
   </div>
