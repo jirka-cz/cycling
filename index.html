@@ -690,6 +690,12 @@ document.addEventListener('pointerdown',e=>{if(!e.target.closest('svg[data-cid]'
 const _zoomCfg={};   // zid -> {type,fullData,keys,colors,H,unit,labels,maxPoints}
 const _zoomState={}; // zid -> {start,end} indexy do fullData
 
+function defaultZoomStartIndex(fullData){
+  if(!fullData||!fullData.length)return 0;
+  const jan1=new Date().getFullYear()+"-01-01";
+  const idx=fullData.findIndex(d=>d.date>=jan1);
+  return idx>=0?idx:0;
+}
 function decimate(arr,maxPoints){
   if(arr.length<=maxPoints)return arr;
   const k=Math.ceil(arr.length/maxPoints);
@@ -710,7 +716,7 @@ function renderZoomChart(zid){
 }
 function zoomWrapLine(fullData,keys,colors,H,unit,labels,zid,maxPoints=90){
   _zoomCfg[zid]={type:"line",fullData,keys,colors,H,unit,labels,maxPoints};
-  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:defaultZoomStartIndex(fullData),end:fullData.length-1};
   const st=_zoomState[zid];
   const svg=svgLine(decimate(fullData.slice(st.start,st.end+1),maxPoints),keys,colors,H,unit,labels);
   return `<div class="chart-zoom" data-zid="${zid}">
@@ -753,7 +759,7 @@ function comboWrapChart(fullData,metrics,zid,maxPoints=100){
   const prevActive=_zoomCfg[zid]&&_zoomCfg[zid].active;
   const active=prevActive||new Set(metrics.map(m=>m.key));
   _zoomCfg[zid]={type:"combo",fullData,metrics,metricRange,H:190,maxPoints,active};
-  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:0,end:fullData.length-1};
+  if(!_zoomState[zid]||_zoomState[zid].end>=fullData.length)_zoomState[zid]={start:defaultZoomStartIndex(fullData),end:fullData.length-1};
   const st=_zoomState[zid];
   const svg=svgCombo(decimate(fullData.slice(st.start,st.end+1),maxPoints),_zoomCfg[zid]);
   const legend=metrics.map(m=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${active.has(m.key)?m.color:"#475569"};margin-right:14px;margin-bottom:6px;cursor:pointer">
@@ -798,7 +804,7 @@ function zoomStep(zid,factor){
 }
 function zoomResetRange(zid){
   const cfg=_zoomCfg[zid];
-  _zoomState[zid]={start:0,end:cfg.fullData.length-1};
+  _zoomState[zid]={start:defaultZoomStartIndex(cfg.fullData),end:cfg.fullData.length-1};
   renderZoomChart(zid);
 }
 function clientXToFrac(zid,clientX){
@@ -2499,7 +2505,7 @@ async function askAI(){
     localStorage.setItem("cyc_ai",JSON.stringify(aiHistory));
     syncToCloud();
     const rb=document.getElementById("ai-response");
-    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR — claude-sonnet-5</div><div class="ai-text">${mdBold(ans)}</div></div>`;
+    if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-label">🤖 AI TRENÉR</div><div class="ai-text">${mdBold(ans)}</div></div>`;
   }catch(e){
     const rb=document.getElementById("ai-response");
     if(rb)rb.innerHTML=`<div class="ai-box"><div class="ai-text" style="color:#ef4444">❌ Chyba: ${e.message}</div></div>`;
