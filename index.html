@@ -1533,7 +1533,7 @@ function closeRideDetail(){detailRideId=null;showTab("jizdy");}
 function renderTF(){
   if(!RIDES.length)return noData();
   const hrData=RIDES.filter(r=>r.hr>0&&r.watts>80).slice().reverse()
-    .map(r=>({label:fmtD(r.date),ratio:+(r.watts/r.hr).toFixed(2)}));
+    .map(r=>({date:r.date,label:fmtD(r.date),ratio:+(r.watts/r.hr).toFixed(2)}));
   const weekVol={};
   RIDES.forEach(r=>{const d=new Date(r.date);d.setDate(d.getDate()-d.getDay());const wk=d.toISOString().slice(0,10);weekVol[wk]=(weekVol[wk]||0)+Math.round(r.dur/3600*10)/10;});
   const wkData=Object.entries(weekVol).sort((a,b)=>a[0]>b[0]?1:-1).slice(-16).map(([d,h])=>({label:fmtD(d),h}));
