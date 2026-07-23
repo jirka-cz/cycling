@@ -838,10 +838,17 @@ function initChartZoom(){
         pinch={ia:screenXToIndex(zid,p2[0].x),ib:screenXToIndex(zid,p2[1].x)};
       }else if(ids.length===1){
         const st=_zoomState[zid],cfg=_zoomCfg[zid];
-        if(st.end-st.start<cfg.fullData.length-1){
+        const svgEl=document.querySelector(`#zc-${zid} svg`);
+        const rect=svgEl?svgEl.getBoundingClientRect():box.getBoundingClientRect();
+        const H=cfg.H||150;
+        const axisTopFrac=(H-CHART_PAD.b)/H; // od tohoto zlomku výšky dolů je pruh s popisky osy X
+        const relY=rect.height?(e.clientY-rect.top)/rect.height:0;
+        const onAxis=relY>=axisTopFrac;
+        if(onAxis&&st.end-st.start<cfg.fullData.length-1){
           try{box.setPointerCapture(e.pointerId);}catch(err){}
           pan={startAt:st.start,endAt:st.end,lastX:e.clientX};
         }
+        // dotyk mimo osu (na ploše grafu) necháváme projít k tooltipu — nezačínáme posouvání
       }
     });
     box.addEventListener("pointermove",e=>{
