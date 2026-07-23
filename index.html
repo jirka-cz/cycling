@@ -2510,8 +2510,15 @@ async function askAI(){
   if(autoMode&&rb0)rb0.innerHTML=`<div style="text-align:center;padding:16px;color:#64748b;font-size:13px">⏳ Trenér rozebírá ${aiRideCtx.length>1?"a porovnává jízdy":"strukturu a provedení jízdy"}...</div>`;
 
   const ridesCtx=aiRideCtx.length>0
-    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km\n  Záměr dle názvu: ${rideNameHint(r.name)}`+
-        (r.structure&&r.structure!=="loading"?`\n  Struktura tréninku:\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"")).join("\n")
+    ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>{
+        const ftpAtDate=getEffectiveFtpAtDate(r.date);
+        const curFtpNow=getCurrentFtp();
+        const ftpNote=ftpAtDate!==curFtpNow
+          ? `⚠️ FTP PLATNÉ K TOMUTO DATU (${r.date}): ${ftpAtDate}W — TOHLE se liší od AKTUÁLNÍHO FTP profilu (${curFtpNow}W) uvedeného výše! Všechna procenta FTP ve "Struktura tréninku" níže jsou VÝHRADNĚ počítaná z ${ftpAtDate}W (dobové FTP), NE z ${curFtpNow}W. NEPŘEPOČÍTÁVEJ je podle aktuálního FTP — pro tuto historickou jízdu je aktuální FTP irelevantní.`
+          : `FTP platné k tomuto datu: ${ftpAtDate}W (stejné jako aktuální).`;
+        return `- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km\n  ${ftpNote}\n  Záměr dle názvu: ${rideNameHint(r.name)}`+
+        (r.structure&&r.structure!=="loading"?`\n  Struktura tréninku (procenta FTP počítaná z ${ftpAtDate}W):\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"");
+      }).join("\n")
     : "";
   const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${effectiveTss(r)}`).join(" | ");
   const curFtp=getCurrentFtp();
