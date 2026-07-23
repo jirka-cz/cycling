@@ -187,13 +187,17 @@ const INFO = {
     <strong>Z5 VO2max:</strong> Krátké intenzivní intervaly (3–6 min). Zvyšuje maximální kyslíkovou kapacitu.<br>
     <strong>Z6 Anaerobní:</strong> Micro-bursts, sprinty. Zlepšuje laktátovou toleranci.`,
 
-  ratio: `<h4>Poměr W/bpm — Aerobní efektivita</h4>
-    Kolik wattů vyprodukuješ na jeden úder srdce. Vyšší hodnota = efektivnější kardiovaskulární systém.<br><br>
+  ratio: `<h4>Efficiency Factor (EF) — Aerobní efektivita</h4>
+    Kolik wattů vyprodukuješ na jeden úder srdce (W/bpm) — zavedená metrika ze sportovní vědy (Joe Friel, "The Cyclist's Training Bible"). Standardně se počítá jako Normalized Power / průměrná TF; appka tady používá zjednodušeně průměrný výkon / průměrná TF, což je blízký odhad.<br><br>
+    <strong>Orientační pásma (velmi hrubé, viz caveat níže):</strong><br>
+    • 1,1–1,3: nízká aerobní efektivita, typické pro začátečníky nebo čistě regenerační jízdy<br>
+    • 1,3–1,5: střední úroveň, typické pro fázi budování základu<br>
+    • 1,5+: dobrá až velmi dobrá aerobní efektivita u trénovaných jezdců<br><br>
+    <strong>DŮLEŽITÝ CAVEAT — na rozdíl od W/kg se tohle NEDÁ srovnávat mezi lidmi:</strong> hodnota závisí na tvé individuální max/klidové TF, tepovém objemu srdce a spoustě dalších věcí (kofein, teplo, dehydratace, spánek), které s kondicí přímo nesouvisí. Číslo "1,32" samo o sobě neříká skoro nic. Co má cenu sledovat, je TREND za týdny/měsíce na PODOBNÝCH jízdách (ideálně klidové Z2, ne intervaly — ty číslo zkreslují).<br><br>
     <strong>Jak interpretovat trend:</strong><br>
-    • Trend ↑ = kondice roste, srdce pracuje efektivněji<br>
+    • Trend ↑ za 8-12 týdnů (i jen o pár %) = aerobní základna reálně roste, i když se FTP ještě nehnulo<br>
     • Náhlý pokles = únava, nemoc nebo přetrénování<br>
-    • Stabilní hodnota = udržovací fáze<br><br>
-    <strong>Tvoje pozorování:</strong> Po nemoci (11.7.) a náročné jízdě (4.7.) poměr klesl — TF byl +12bpm nad normálem při stejném výkonu. Nyní by se měl vracet na normál.`,
+    • Stabilní hodnota = udržovací fáze, ne nutně špatně`,
 
   volume: `<h4>Týdenní objem (hodiny)</h4>
     Celkové hodiny strávené na kole každý týden.<br><br>
@@ -1544,7 +1548,7 @@ function renderTF(){
   <div class="card">
     <div class="card-header"><div><div class="card-title">Poměr W/bpm</div><div class="card-sub">Aerobní efektivita · trend ↑ = lepší kondice</div></div>${infoBtn("ratio")}</div>
     ${infoBox("ratio")}
-    ${zoomWrapLine(hrData,["ratio"],["#34d399"],150,"%",["Efektivita"],"tf-ratio")}
+    ${zoomWrapLine(hrData,["ratio"],["#34d399"],150,"W/bpm",["Efektivita"],"tf-ratio")}
   </div>
   <div class="card">
     <div class="card-header"><div><div class="card-title">Týdenní objem (hod)</div><div class="card-sub">Posledních 16 týdnů</div></div>${infoBtn("volume")}</div>
@@ -1718,15 +1722,33 @@ function buildPrevWeekSummary(){
   const lastNote=lastHardDone?`\nPOZOR NA NÁVAZNOST: poslední den předchozího týdne (Den ${last.day_number}: ${last.title}) byl intenzivní a sportovec ho splnil — nový Den 1 tohoto týdne by po něm NEMĚL být zase intenzivní, dej tam volno nebo lehkou Z2 jízdu.`:"";
   return lines.join("\n")+lastNote;
 }
+async function buildDetailedRidesList(rides){
+  const token=await getToken();
+  const lines=[];
+  for(const r of rides){
+    const ftpAtRide=getEffectiveFtpAtDate(r.date);
+    let structureText=null;
+    if(token){
+      try{
+        const laps=await fetchActivityLaps(token,r.id);
+        structureText=summarizeFromLaps(laps,ftpAtRide);
+      }catch(e){}
+    }
+    const header=`${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W avg":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${Math.round(r.dur/60)}min | ${r.km}km${r.prs>0?` | ${r.prs}PR`:""}`;
+    lines.push(structureText?`${header}\n  ${structureText.split("\n").join("\n  ")}`:header);
+  }
+  return lines.join("\n")||"(žádné zaznamenané jízdy)";
+}
+async function buildDetailedRecentRides(n){
+  return buildDetailedRidesList(RIDES.slice(0,n));
+}
 async function loadPlan() {
   if(planLoading||!S.workerUrl) return;
   planLoading=true;
   const btn=document.getElementById("plan-btn");
   if(btn){btn.textContent="⏳ Trenér analyzuje data...";btn.style.background="#334155";}
 
-  const last10=RIDES.slice(0,10).map(r=>
-    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${r.km}km | ${r.elev}m${r.prs>0?" | "+r.prs+"PR":""}`
-  ).join("\n");
+  const last7Detailed=await buildDetailedRecentRides(7);
 
   const totalTssWeek=RIDES.filter(r=>(new Date()-new Date(r.date))<7*24*3600*1000).reduce((s,r)=>s+effectiveTss(r),0);
   const totalTss2w=RIDES.filter(r=>(new Date()-new Date(r.date))<14*24*3600*1000).reduce((s,r)=>s+effectiveTss(r),0);
@@ -1748,8 +1770,8 @@ TSS tento týden: ${totalTssWeek}
 TSS za 14 dní: ${totalTss2w}
 Průměrná TF posledních 5 jízd: ${avgHrLast5}bpm
 
-POSLEDNÍCH 10 JÍZD:
-${last10}
+POSLEDNÍCH 7 JÍZD (s rozborem struktury/intervalů tam, kde je k dispozici ze zaznamenaných kol na zařízení — u těch bez struktury je jen celkový průměr):
+${last7Detailed}
 
 Dnešní datum: ${new Date().toLocaleDateString("cs-CZ",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}
 ${(()=>{const pw=buildPrevWeekSummary();return pw?`\nPŘEDCHOZÍ TÝDENNÍ PLÁN (pořadí dnů a jejich plnění — použij pro návaznost mezi týdny, zejména konec předchozího týdne vs. začátek nového):\n${pw}\n`:"";})()}
@@ -1873,9 +1895,7 @@ async function updatePlan(){
   const hoursAlreadyDone=Math.round((minutesAlreadyDone/6))/10;
   const remainingTarget=Math.max(1,Math.round(((S.weeklyHours||8)-hoursAlreadyDone)*10)/10);
 
-  const weekRidesSince=RIDES.filter(r=>new Date(r.date)>=new Date(planWeekStart+"T00:00:00")).map(r=>
-    `${r.date} | ${r.name} | ${r.type==="VirtualRide"?"Zwift":"Venkovní"} | ${r.watts>0?r.watts+"W":"-"} | TF:${r.hr>0?r.hr:"?"}bpm | TSS:${effectiveTss(r)} | ${r.km}km`
-  ).join("\n")||"(žádné zaznamenané jízdy od začátku týdne)";
+  const weekRidesSince=await buildDetailedRidesList(RIDES.filter(r=>new Date(r.date)>=new Date(planWeekStart+"T00:00:00")));
 
   const curFtp=getCurrentFtp();
   const prompt=`Tento týden začal ${planWeekStart}, dnes je Den ${todayNum} tohoto týdne (z 7).
@@ -2202,6 +2222,8 @@ Přesné číslo aktuální deklarované týdenní kapacity najdeš v sekci DYNA
 - Pásmo 15h+/týden: vysoký objem. Skladba týdne: cca 75-80% objemu v Z1-Z2 (polarizovaný poměr dle Seilera dává smysl doslovně), 2-3 delší Z2 jízdy (90-180 min) na aerobní základ a mitochondriální adaptace, 1 SST/threshold blok, 1 VO2max/anaerobní blok. Objem umožňuje i doplňkovou tempo (Z3) jízdu nebo druhou kvalitní jednotku. Skladba MUSÍ být viditelně odlišná od nízkoobjemového týdne — víc hodin znamená víc a delších Z2 jízd, ne jen prodloužené verze stejných intervalů.
 Sportovec svoji kapacitu zadal záměrně — naplánuj mu k tomu blízkou náplň (cílový rozsah hodin viz DYNAMICKÝ KONTEXT), ne jen zlomek této kapacity. Nevyužitý čas bez fyziologického důvodu je promarněná příležitost k adaptaci.
 
+VÍKENDOVÉ DLOUHÉ JÍZDY (Den 6-7): pokud je v datech od uživatele uvedená "Preference víkendových dlouhých jízd", sportovec má o víkendu obvykle prostor na jednu delší jízdu v rozmezí (typicky 3-6h, přesně podle toho, co je uvedeno) — přesná délka se liší týden od týdne podle okolností, není to fixní číslo. Naplánuj Den 6 nebo Den 7 (podle toho, kam lépe zapadne vzhledem k ostatním dnům a rozestupu od intenzivních tréninků) jako tuhle dlouhou Z2 jízdu, s konkrétní cílovou délkou zvolenou uvnitř uvedeného rozmezí tak, aby spolu se zbytkem týdne dával smysl celkový hodinový součet (viz DYNAMICKÝ KONTEXT) — u vyššího zbývajícího rozpočtu voli delší konec rozmezí, u nižšího kratší. Druhý víkendový den nech jako volno/lehkou regeneraci, pokud fyziologie nevyžaduje jinak.
+
 CTL/ATL/TSB PERIODIZACE:
 - CTL (Chronic Training Load, 42d): ideální nárůst max 5-8 TSS bodů týdně, jinak riziko přetrénování
 - ATL (Acute Training Load, 7d): odráží čerstvou únavu
@@ -2316,13 +2338,14 @@ TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
 
   prompt+=`
 ODPOVÍDEJ VŽDY (textová část je jen stručné shrnutí a doporučení — NIKDY neopakuj konkrétní watty, délky intervalů, počty opakování ani strukturu odpočinků, ty patří VÝHRADNĚ do JSON bloku výše a zobrazují se sportovci v záložce Tréninky):
-1. Krátké shrnutí aktuální formy a strategie tohoto týdne (3-4 věty) — na základě čeho jsi plán takto sestavil (CTL/ATL/TSB, cíl, časová kapacita)
-2. Přehled dní jako seznam "Den 1" až "Den 7" (pokud DYNAMICKÝ KONTEXT říká režim "AKTUALIZACE OD DNE X", dny 1 až X-1 jen zopakuj beze změny z dat od uživatele, u dnů X-7 popiš aktualizovaný obsah; u režimu "NOVÝ PLÁN" popiš všech 7 dní stejně), u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování dnů dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin (přesný cílový rozsah je v sekci DYNAMICKÝ KONTEXT na konci promptu — u režimu aktualizace jde o ZBÝVAJÍCÍ hodiny do konce týdne, u nového plánu o celý týden) — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z cílové hodnoty), ne jen "nepřekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 3 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
-3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit). Pokud je REŽIM "AKTUALIZACE OD DNE X", přidej i bod 4: CO SE ZMĚNILO oproti původnímu plánu pro dny X až 7 a PROČ — konkrétně, s odkazem na to, co se reálně stalo/nestalo (splněné/nesplněné tréninky, skutečný výkon) nebo na změnu časové kapacity. Pokud se nic nemění, napiš to i tak ("plán pro zbytek týdne zůstává beze změny, protože...").
+1. Pokud je v datech od uživatele uveden PŘEDCHOZÍ TÝDENNÍ PLÁN, nejprve krátce zhodnoť RETROSPEKTIVNĚ ten uplynulý týden (2-3 věty). ZALOŽ TOHLE HODNOCENÍ PŘEDEVŠÍM NA SKUTEČNÝCH DATECH ZE SEKCE "Posledních X jízd" (reálné watty, TF, TSS, délka za posledních ~14 dní) — sekce PŘEDCHOZÍ TÝDENNÍ PLÁN sama o sobě ukazuje jen ✅/❌ splněno bez čísel, to použij pouze jako doplňkový strukturální kontext (co bylo kdy naplánováno), ne jako hlavní zdroj pro posouzení kvality provedení. Zhodnoť: byl týden z fyziologického hlediska přínosný pro deklarovaný cíl (dodržel se objem, poměr intenzity, nedošlo k přetrénování — porovnej se skutečným TSS/hodinami z reálných jízd, ne jen s plánem)? Jaké slabé místo to odhalilo (např. reálné watty v intervalech pod cílem, nízký skutečný objem oproti plánu, TF vzorce naznačující nedostatečnou zátěž nebo naopak únavu)? Pokud předchozí týden uveden není (první plán), tento bod vynech.
+2. Krátké shrnutí aktuální formy a strategie TOHOTO týdne (3-4 věty) — na základě čeho jsi plán takto sestavil (CTL/ATL/TSB, cíl, časová kapacita), a pokud retrospektiva výše odhalila slabinu, výslovně napiš, jak se na ni tento týden konkrétně zaměřuješ (např. víc objemu v Z2, jiný typ intervalu, delší rozestupy mezi těžkými dny)
+3. Přehled dní jako seznam "Den 1" až "Den 7" (pokud DYNAMICKÝ KONTEXT říká režim "AKTUALIZACE OD DNE X", dny 1 až X-1 jen zopakuj beze změny z dat od uživatele, u dnů X-7 popiš aktualizovaný obsah; u režimu "NOVÝ PLÁN" popiš všech 7 dní stejně), u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování dnů dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin (přesný cílový rozsah je v sekci DYNAMICKÝ KONTEXT na konci promptu — u režimu aktualizace jde o ZBÝVAJÍCÍ hodiny do konce týdne, u nového plánu o celý týden) — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z cílové hodnoty), ne jen "nepřekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 4 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
+4. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit). Pokud je REŽIM "AKTUALIZACE OD DNE X", přidej i bod 5: CO SE ZMĚNILO oproti původnímu plánu pro dny X až 7 a PROČ — konkrétně, s odkazem na to, co se reálně stalo/nestalo (splněné/nesplněné tréninky, skutečný výkon) nebo na změnu časové kapacity. Pokud se nic nemění, napiš to i tak ("plán pro zbytek týdne zůstává beze změny, protože...").
 
 PŘED FINÁLNÍ ODPOVĚDÍ SI TICHO OVĚŘ (nedávej to do odpovědi, jen si to zkontroluj a případně oprav plán, než napíšeš JSON i text):
 (a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda. Pokud je uveden PŘEDCHOZÍ TÝDEN v datech od uživatele, počítej do této kontroly i návaznost — pokud poslední den předchozího týdne byl intenzivní a splněný, nový Den 1 nesmí být zase intenzivní.
-(b) Sečti duration_min všech (u režimu aktualizace jen ZBÝVAJÍCÍCH dnů od X do 7) dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v cílovém rozsahu ze sekce DYNAMICKÝ KONTEXT, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
+(b) Sečti duration_min všech (u režimu aktualizace jen ZBÝVAJÍCÍCH dnů od X do 7) dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v cílovém rozsahu ze sekce DYNAMICKÝ KONTEXT, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 4.
 Teprve po této kontrole vypiš finální JSON a text.
 Buď stručný a věcný, bez omáčky. Watty a délky nikam v textu nepiš — jsou jen v JSON.
 Odpovídej v češtině.`;
@@ -2362,6 +2385,7 @@ Forma (CTL): ${LATEST.ctl} | Únava (ATL): ${LATEST.atl} | Svěžest (TSB): ${LA
 Tréninkový cíl: ${S.goal}
 Zdravotní stav: ${S.notes||"bez omezení"}
 Časová kapacita: max ${S.weeklyHours||8}h týdně na trénink celkem
+${S.weekendPref?`Preference víkendových dlouhých jízd (Den 6-7): ${S.weekendPref}\n`:""}
 
 Posledních ${days} jízd (TSS celkem: ${totalTSS}, ${totalHours}h, průměr ${avgWatts}W, průměr TF ${avgHR}bpm, Zwift: ${zwiftCount}x, venkovní: ${outdoorCount}x):
 ${recent.map(r=>`• ${r.date} [${r.type==="VirtualRide"?"Zwift":"Venkovní"}] ${r.name}: ${r.watts}W avg, TF ${r.hr}bpm, ${Math.round(r.dur/60)}min, ${r.km}km, TSS ${effectiveTss(r)}${r.prs>0?`, ${r.prs} PR`:""}`).join("\n")}`;
@@ -2641,6 +2665,7 @@ function renderAdmin(){
     </div>
     <div class="field-label">Tréninkový cíl</div><textarea id="s-goal" rows="2">${S.goal}</textarea>
     <div class="field-label">Zdravotní poznámky</div><textarea id="s-notes" rows="2">${S.notes}</textarea>
+    <div class="field-label">Víkendové dlouhé jízdy (Den 6-7)</div><textarea id="s-weekend" rows="2" placeholder="např. Obvykle mám prostor na dlouhou jízdu 3-6h, podle okolností/počasí/rodiny — může se lišit týden od týdne">${S.weekendPref||""}</textarea>
     <div class="field-label">Časová kapacita — max hodin týdně na trénink</div><input id="s-weeklyhours" type="number" step="0.5" value="${S.weeklyHours}">
     <div style="font-size:10px;color:#64748b;margin-top:4px">Trenér přizpůsobí typ a délku tréninků tomuto objemu (bez ohledu na konkrétní dny).</div>
     <div class="field-label">AI System Prompt</div><textarea id="s-prompt" rows="3">${S.sysPrompt}</textarea>
@@ -2815,6 +2840,7 @@ function saveSettings(){
   S.restHr=Number(gv("s-resthr"))||S.restHr;
   if(gv("s-goal")!==null) S.goal=gv("s-goal");
   if(gv("s-notes")!==null) S.notes=gv("s-notes");
+  if(gv("s-weekend")!==null) S.weekendPref=gv("s-weekend");
   S.weeklyHours=Number(gv("s-weeklyhours"))||S.weeklyHours;
   if(gv("s-prompt")!==null) S.sysPrompt=gv("s-prompt")||S.sysPrompt;
   localStorage.setItem("cyc_s",JSON.stringify(S));
@@ -2824,7 +2850,7 @@ function saveSettings(){
   if(btn){btn.textContent="✅ Uloženo!";btn.style.background="#16a34a";setTimeout(()=>{btn.textContent="💾 Uložit vše";btn.style.background="#1e40af";},2000);}
 }
 function clearAllData(){if(confirm("Smazat VŠECHNA data?")){["cyc_s","cyc_rides","cyc_ai","cyc_last_sync","cyc_ride_streams","cyc_pc_cache"].forEach(k=>localStorage.removeItem(k));RIDES=[];FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};S={...DEFAULT_S};rideStreamsCache={};detailRideId=null;invalidateAutoFtpCache();updateHeader();showTab("admin");}}
-const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",weeklyHours:8,sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpMode:"auto",ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",ftpManualEntries:[]};
+const DEFAULT_S={name:"Jiří Votava",ftp:245,weight:77,maxHr:178,restHr:48,goal:"Zvýšit FTP na 270W.",notes:"",weekendPref:"",weeklyHours:8,sysPrompt:"Jsi profesionální cyklistický trenér. Odpovídáš stručně, konkrétně, v češtině.",quickQ:["Jak jsem na tom?","Co jet zítra?","FTP trend","Kdy FTP test?","Jsem zotavený?"],workerUrl:"",ftpMode:"auto",ftpTestKeywords:"ramp,ftp test,ramp test,ftp ramp",ftpManualEntries:[]};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 recompute();updateHeader();
