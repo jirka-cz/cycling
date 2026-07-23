@@ -67,9 +67,9 @@ textarea{resize:vertical}
 #chart-tooltip{position:fixed;display:none;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:7px 10px;font-size:11px;line-height:1.5;color:#e2e8f0;pointer-events:none;z-index:999;box-shadow:0 6px 16px rgba(0,0,0,.5);white-space:nowrap}
 #chart-tooltip b{font-weight:800}
 svg[data-cid]{touch-action:none;cursor:crosshair}
-.chart-zoom{position:relative;overflow:hidden;border-radius:8px}
-.zoom-range{font-size:9px;color:#475569;text-align:center;margin-top:2px}
-.zoom-ctrl{position:absolute;top:2px;right:2px;display:flex;flex-direction:column;gap:4px;z-index:5}
+.chart-zoom{position:relative;border-radius:8px}
+.zoom-range{font-size:9px;color:#475569}
+.zoom-ctrl{display:flex;flex-direction:row;gap:6px}
 .zoom-btn{width:24px;height:24px;border-radius:6px;background:rgba(15,23,42,.85);border:1px solid #334155;color:#e2e8f0;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;padding:0}
 .zoom-btn:active{background:#1e40af}
 @media (min-width:640px){
@@ -483,7 +483,7 @@ function renderPowerCurveTable(){
 }
 
 // ── FITNESS CALC ──────────────────────────────────────────────────────────────
-function fmtD(iso){const p=String(iso).split("-");return p.length>=3?`${p[2]}.${p[1]}`:iso;}
+function fmtD(iso){const p=String(iso).split("-");return p.length>=3?`${p[2]}.${p[1]}.${p[0].slice(2)}`:iso;}
 function recompute(){
   if(!RIDES.length){FITNESS=[];LATEST={ctl:0,atl:0,tsb:0};return;}
   const byDate={};
@@ -561,7 +561,7 @@ function getAutoFtpAtDate(dateStr){
   return peaks[0].f; // jízda předchází první detekovaný test
 }
 function getCurrentFtp(){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(new Date().toISOString().slice(0,10));}
-function getEffectiveFtpAtDate(dateStr){return S.ftpMode==="manual"?(S.ftp||0):getAutoFtpAtDate(dateStr);}
+function getEffectiveFtpAtDate(dateStr){return getAutoFtpAtDate(dateStr);}
 function effectiveTss(r){
   if(S.ftpMode==="manual"&&r.watts>0&&S.ftp>0)return Math.round((r.dur/3600)*(r.watts/S.ftp)*(r.watts/S.ftp)*100);
   return r.tss||0;
@@ -715,12 +715,14 @@ function zoomWrapLine(fullData,keys,colors,H,unit,labels,zid,maxPoints=90){
   const svg=svgLine(decimate(fullData.slice(st.start,st.end+1),maxPoints),keys,colors,H,unit,labels);
   return `<div class="chart-zoom" data-zid="${zid}">
     <div id="zc-${zid}">${svg}</div>
-    <div class="zoom-ctrl">
-      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
-      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
-      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
+      <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
+      <div class="zoom-ctrl">
+        <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+        <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+        <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+      </div>
     </div>
-    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
   </div>`;
 }
 // ── KOMBINOVANÝ GRAF (výkon/TF/kadence/výška přeložené přes sebe, zapínatelné) ─
@@ -760,12 +762,14 @@ function comboWrapChart(fullData,metrics,zid,maxPoints=100){
   return `<div id="combo-legend-${zid}" style="margin-bottom:6px">${legend}</div>
   <div class="chart-zoom" data-zid="${zid}">
     <div id="zc-${zid}">${svg}</div>
-    <div class="zoom-ctrl">
-      <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
-      <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
-      <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
+      <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
+      <div class="zoom-ctrl">
+        <button class="zoom-btn" onclick="zoomStep('${zid}',0.6)">+</button>
+        <button class="zoom-btn" onclick="zoomStep('${zid}',${(1/0.6).toFixed(4)})">−</button>
+        <button class="zoom-btn" onclick="zoomResetRange('${zid}')" style="font-size:11px">⟲</button>
+      </div>
     </div>
-    <div class="zoom-range" id="zr-${zid}">${fmtRangeLabel(_zoomCfg[zid],st.start,st.end)}</div>
   </div>`;
 }
 function toggleComboSeries(zid,key){
@@ -1131,10 +1135,11 @@ async function addToAI(id,name,date,watts,hr,tss,km){
     setTimeout(renderAICtx,100);
     try{
       const token=await getToken();
+      const ftpAtRide=getEffectiveFtpAtDate(date);
       let structureText=null;
       if(token){
         const laps=await fetchActivityLaps(token,id);
-        structureText=summarizeFromLaps(laps,getCurrentFtp());
+        structureText=summarizeFromLaps(laps,ftpAtRide);
       }
       if(!structureText){
         // záložní řešení: laps nejsou k dispozici (volná jízda) nebo jich je 0-1 →
@@ -1144,8 +1149,8 @@ async function addToAI(id,name,date,watts,hr,tss,km){
           sd=await fetchRideStreamsFromStrava(token,{id});
           if(sd)saveRideStreams(id,sd);
         }
-        const stats=sd?detectRideStructure(sd,getCurrentFtp()):null;
-        structureText=stats?summarizeRideStructure(stats,getCurrentFtp()):"";
+        const stats=sd?detectRideStructure(sd,ftpAtRide):null;
+        structureText=stats?summarizeRideStructure(stats,ftpAtRide):"";
       }
       entry.structure=structureText;
     }catch(e){
@@ -1696,7 +1701,7 @@ function renderPlanOutput(text) {
 function buildPrevWeekSummary(){
   if(!TRAINING_PLANS.length)return null;
   const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
-  const isRest=w=>w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+  const isRest=w=>w.type==="rest";
   const lines=sorted.map(w=>{
     const rest=isRest(w);
     const status=rest?"":(w.completed?"✅ splněno":"❌ nesplněno/nezaznamenáno");
@@ -1842,7 +1847,7 @@ async function updatePlan(){
   autoMatchCompletedRides(); // ať máme co nejčerstvější spárování skutečných jízd s plánem
 
   const sorted=[...TRAINING_PLANS].sort((a,b)=>(a.day_number||99)-(b.day_number||99));
-  const isRest=w=>w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+  const isRest=w=>w.type==="rest";
   const pastDays=sorted.filter(w=>(w.day_number||99)<todayNum);
   const futureDays=sorted.filter(w=>(w.day_number||99)>=todayNum);
   const pastSummary=pastDays.map(w=>{
@@ -1947,7 +1952,7 @@ function ftpPctToWatts(pctStr){
 function checkRideMatches(){
   const changed=autoMatchCompletedRides();
   showTab("treninky");
-  const nonRest=TRAINING_PLANS.filter(w=>!(w.type==="rest"||/volno|regenerace/i.test(w.title||"")));
+  const nonRest=TRAINING_PLANS.filter(w=>!(w.type==="rest"));
   const completedCount=nonRest.filter(w=>w.completed).length;
   if(changed){
     alert(`✅ Aktualizováno — ${completedCount}/${nonRest.length} tréninkových dnů je teď označeno jako splněno.`);
@@ -1960,7 +1965,7 @@ function autoMatchCompletedRides(){
   ensurePlanDates();
   let changed=false;
   TRAINING_PLANS.forEach(w=>{
-    const isRest=w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+    const isRest=w.type==="rest";
     if(isRest||!w.date)return;
     const sameDate=RIDES.filter(r=>r.date===w.date);
     let match=null;
@@ -2077,7 +2082,7 @@ function renderTreninky(){
       <button class="btn" onclick="startSwap('${swapSourceId}')" style="width:auto;padding:6px 10px;font-size:11px;background:#334155">Zrušit</button>
     </div>`:"";
   const cards=sorted.map(w=>{
-    const isRest=w.type==="rest"||/volno|regenerace/i.test(w.title||"");
+    const isRest=w.type==="rest";
     const color=typeColor(w.type);
     const isSwapSource=swapSourceId===w.id;
     const isSwapTarget=swapSourceId&&!isSwapSource;
@@ -2237,7 +2242,7 @@ FORMÁT ODPOVĚDI — ZÁVAZNÉ POŘADÍ: Odpověď MUSÍ začínat ROVNOU JSON 
 
 Blok musí být validní JSON, uzavřený mezi značkami ===WORKOUTS_JSON=== a ===END_WORKOUTS_JSON===. Je to JEDINÉ místo, kam patří JSON — nikam jinam.
 
-Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, ftp_pct jako rozsah nebo jedno číslo, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže; pole "nutrition" viz sekce VÝŽIVA výše, u "rest" dnů vynech):
+Schema (pole "phases" popisuje jednotlivé úseky tréninku v chronologickém pořadí, duration_min v minutách, "day_number" je pořadí dne 1-7 podle bodu 2 níže; pole "nutrition" viz sekce VÝŽIVA výše, u "rest" dnů vynech). DŮLEŽITÉ K "ftp_pct": u HLAVNÍCH INTERVALŮ (ne jen zahřátí/odpočinku) VŽDY použij ROZSAH (např. "88-93%", "112-118%"), NIKDY jedno pevné číslo — venkovní jízda nejde udržet na konstantním výkonu, jednočíslový cíl by na cyklocomputeru zbytečně pípal mimo rozsah. Rozsah volej tak, aby měl smysl fyziologicky (např. SST/threshold ±2-3 % FTP, VO2max ±3-5 % FTP — čím vyšší intenzita, tím širší přípustné pásmo, protože i malá odchylka ve wattech tam znamená velkou odchylku v úsilí):
 
 DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max, volno), ne šablony k doslovnému kopírování. Konkrétní čísla, počty intervalů, délky i strukturu zahřátí u KAŽDÉHO tréninku odvoď samostatně z jeho typu (viz sekce ZAHŘÁTÍ A PRIMING výše), z aktuální fyziologie sportovce a časové kapacity — nepoužívej pro všechny tréninky/dny stejnou kostru jen proto, že je ve schématu jako první.
 
@@ -2250,14 +2255,14 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
     "duration_min": 90,
     "phases": [
       {"phase":"Zahřátí","duration_min":15,"ftp_pct":"50-60%"},
-      {"phase":"Interval 1","duration_min":20,"ftp_pct":"90%"},
+      {"phase":"Interval 1","duration_min":20,"ftp_pct":"88-93%"},
       {"phase":"Odpočinek","duration_min":5,"ftp_pct":"45%"},
-      {"phase":"Interval 2","duration_min":20,"ftp_pct":"90%"},
+      {"phase":"Interval 2","duration_min":20,"ftp_pct":"88-93%"},
       {"phase":"Odpočinek","duration_min":5,"ftp_pct":"45%"},
-      {"phase":"Interval 3","duration_min":20,"ftp_pct":"90%"},
+      {"phase":"Interval 3","duration_min":20,"ftp_pct":"88-93%"},
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
-    "setup_tip": "Zwift/Garmin ERG mód: nastav 90% FTP na intervaly, 45% na odpočinek. Pokud nemáš ERG, jeď podle wattmetru na Sweet Spot zóně.",
+    "setup_tip": "Zwift/Garmin ERG mód: nastav rozsah 88-93% FTP na intervaly (ERG s pásmem, ne pevné číslo), 45% na odpočinek. Venku jeď podle wattmetru v tomhle rozsahu, necíli na jedno pevné číslo.",
     "nutrition": {"bottles": 1, "mix1_scoops_per_bottle": 4, "mix2_scoops_per_bottle": 2, "recovery_mix": true, "add_whey": false, "note": "90 min SST spadá do pásma 76-120 min → 1 lahev, o něco koncentrovanější recept."}
   },
   {
@@ -2279,15 +2284,15 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
       {"phase":"Volno","duration_min":2,"ftp_pct":"45%"},
       {"phase":"Aktivace 2","duration_min":1,"ftp_pct":"100%"},
       {"phase":"Volno","duration_min":2,"ftp_pct":"45%"},
-      {"phase":"Interval 1","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Interval 1","duration_min":4,"ftp_pct":"112-118%"},
       {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
-      {"phase":"Interval 2","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Interval 2","duration_min":4,"ftp_pct":"112-118%"},
       {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
-      {"phase":"Interval 3","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Interval 3","duration_min":4,"ftp_pct":"112-118%"},
       {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
-      {"phase":"Interval 4","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Interval 4","duration_min":4,"ftp_pct":"112-118%"},
       {"phase":"Odpočinek","duration_min":3,"ftp_pct":"45%"},
-      {"phase":"Interval 5","duration_min":4,"ftp_pct":"115%"},
+      {"phase":"Interval 5","duration_min":4,"ftp_pct":"112-118%"},
       {"phase":"Vyjetí","duration_min":5,"ftp_pct":"45%"}
     ],
     "setup_tip": "Zwift/Garmin ERG mód: aktivační úseky i intervaly nastav dle % FTP výše. Aktivace před VO2max blokem urychlí nástup aerobního krytí a zkvalitní první interval.",
@@ -2297,8 +2302,8 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
 ===END_WORKOUTS_JSON===
 
 REŽIM GENEROVÁNÍ — přesný režim najdeš v sekci DYNAMICKÝ KONTEXT na konci tohoto promptu:
-- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: NOVÝ PLÁN": Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna), a pole "nutrition" u "rest" dnů vynech. U KAŽDÉHO netréninkového dne přidej pole "nutrition" podle sekce VÝŽIVA výše. Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.
-- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: AKTUALIZACE OD DNE X": Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne X DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše (u "rest" dnů pole "nutrition" vynech). NEGENERUJ objekty pro dny před Dnem X — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly. U KAŽDÉHO netréninkového dne nezapomeň na pole "nutrition" podle sekce VÝŽIVA výše.
+- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: NOVÝ PLÁN": Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů. ROZLIŠUJ DVA PŘÍPADY: (a) ČISTÉ VOLNO (žádná jízda) → "type":"rest", "title":"Volno", "duration_min":0, "phases":[], "setup_tip":null, pole "nutrition" vynech. (b) AKTIVNÍ REGENERACE (lehká jízda) → NENÍ to "rest" — nastav "type":"recovery" (ne "rest"), "title":"Aktivní regenerace Z1-Z2" nebo podobně, "duration_min" na skutečnou délku, "phases" s jednoduchou strukturou (celá jízda v Z1-Z2), "setup_tip" s nastavením, a pole "nutrition" podle sekce VÝŽIVA výše — je to reálná jízda, sportovec ji potřebuje umět zaškrtnout jako splněnou a vidět nastavení, stejně jako u ostatních tréninků.
+- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: AKTUALIZACE OD DNE X": Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne X DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro rozlišení "rest" vs "recovery" jako výše (u "rest" dnů pole "nutrition" vynech, u "recovery" ho vyplň). NEGENERUJ objekty pro dny před Dnem X — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly.
 
 TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
