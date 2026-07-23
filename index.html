@@ -1699,7 +1699,7 @@ Na základě těchto dat sestav konkrétní doporučení. Uveď přesné watty, 
 
   try{
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:prompt}]})});
+      body:JSON.stringify({task:"plan",system:{static:buildCoachSystemPrompt(true),dynamic:buildDynamicContext(null,null)},messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
     const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||"Chyba odpovědi (prázdný obsah, zkontroluj Network tab).");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
@@ -1847,7 +1847,7 @@ Odhadem už bylo v tomto týdnu odtrénováno cca ${hoursAlreadyDone}h ze splně
 
   try{
     const res=await fetch(S.workerUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system:buildCoachSystemPrompt(true,todayNum,remainingTarget),messages:[{role:"user",content:prompt}]})});
+      body:JSON.stringify({task:"plan",system:{static:buildCoachSystemPrompt(true),dynamic:buildDynamicContext(todayNum,remainingTarget)},messages:[{role:"user",content:prompt}]})});
     const data=await res.json();
     const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||"Chyba odpovědi (prázdný obsah, zkontroluj Network tab).");
     const {text:cleanText,workouts,truncated}=extractWorkouts(ans);
@@ -2118,18 +2118,10 @@ function renderTreninky(){
 }
 
 // ── AI TRENÉR ─────────────────────────────────────────────────────────────────
-function buildCoachSystemPrompt(includeWorkoutSchema,updateFromDay,remainingHoursTarget){
-  const effWh=remainingHoursTarget!=null?remainingHoursTarget:(S.weeklyHours||8);
-  const wh=S.weeklyHours||8;
-  let timeGuidance;
-  if(wh>=15){
-    timeGuidance=`Sportovec má ${wh}h/týden — vysoký objem. Skladba týdne: cca 75-80% objemu v Z1-Z2 (polarizovaný poměr dle Seilera dává smysl doslovně), 2-3 delší Z2 jízdy (90-180 min) na aerobní základ a mitochondriální adaptace, 1 SST/threshold blok, 1 VO2max/anaerobní blok. Objem umožňuje i doplňkovou tempo (Z3) jízdu nebo druhou kvalitní jednotku. Skladba MUSÍ být viditelně odlišná od nízkoobjemového týdne — víc hodin znamená víc a delších Z2 jízd, ne jen prodloužené verze stejných intervalů.`;
-  } else if(wh>=10){
-    timeGuidance=`Sportovec má ${wh}h/týden — střední objem. Skladba týdne: 1 delší Z2 jízda (90+ min, jinak nemá aerobní přínos) jako základ, 1-2 kvalitní intenzivní jednotky (SST/threshold + VO2max/anaerobní), zbytek doplňkové Z2/aktivní regenerace. Neplň Z2 objem uměle jen kvůli poměru 80/20 — každá Z2 jízda musí mít reálné trvání (60+ min).`;
-  } else {
-    timeGuidance=`Sportovec má jen ${wh}h/týden. DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu.`;
-  }
-
+// Prompt je rozdělený na STATICKOU část (nikdy se neliší mezi voláními → jde cachovat
+// přes Anthropic prompt caching, výrazně to snižuje cenu opakovaných volání) a malou
+// DYNAMICKOU část (aktuální hodiny, režim generování — ta se posílá zvlášť, mimo cache).
+function buildCoachSystemPrompt(includeWorkoutSchema){
   let prompt=`Jsi EliteCoach — expertní cyklistický trenér s hlubokou znalostí sportovní fyziologie a periodizace. Vycházíš z těchto vědecky podložených principů:
 
 FYZIOLOGIE A TRÉNINKOVÉ ZÓNY:
@@ -2146,8 +2138,11 @@ ZAHŘÁTÍ A PRIMING — ROZLIŠUJ PODLE TYPU HLAVNÍHO INTERVALU:
 - Dlouhé Z2 jízdy: postačí kratší progresivní rozjezd (5-10 min), není potřeba aktivace
 
 ČASOVÁ KAPACITA SPORTOVCE:
-Sportovec zadal ${wh}h týdně jako reálně dostupný trénovací čas — naplánuj mu k tomu blízkou náplň (cílový rozsah viz bod 2 v ODPOVÍDEJ VŽDY níže), ne jen zlomek této kapacity. Nevyužitý čas bez fyziologického důvodu (viz níže) je promarněná příležitost k adaptaci.
-${timeGuidance}
+Přesné číslo aktuální deklarované týdenní kapacity najdeš v sekci DYNAMICKÝ KONTEXT na úplném konci tohoto promptu — podle něj vyber odpovídající pásmo níže a použij jeho skladbu:
+- Pásmo <10h/týden: DŮLEŽITÉ: striktní 80/20 polarizovaný poměr je validní hlavně u sportovců s vysokým objemem (10h+/týden) — u nižšího objemu by 80% v Z2 znamenalo jen pár hodin nízké intenzity, což samo o sobě nevyvolá dostatečnou adaptaci. Místo toho upřednostni časově efektivní tréninky: Sweet Spot / threshold intervaly (88-94% FTP) jako páteř plánu, kratší VO2max bloky pro stimul stropu výkonu, a jen 1 delší Z2 jízdu týdně na aerobní základ, pokud čas dovolí. Cíl: maximální adaptační stimul na minutu tréninku, ne dodržení poměru za každou cenu.
+- Pásmo 10-15h/týden: střední objem. Skladba týdne: 1 delší Z2 jízda (90+ min, jinak nemá aerobní přínos) jako základ, 1-2 kvalitní intenzivní jednotky (SST/threshold + VO2max/anaerobní), zbytek doplňkové Z2/aktivní regenerace. Neplň Z2 objem uměle jen kvůli poměru 80/20 — každá Z2 jízda musí mít reálné trvání (60+ min).
+- Pásmo 15h+/týden: vysoký objem. Skladba týdne: cca 75-80% objemu v Z1-Z2 (polarizovaný poměr dle Seilera dává smysl doslovně), 2-3 delší Z2 jízdy (90-180 min) na aerobní základ a mitochondriální adaptace, 1 SST/threshold blok, 1 VO2max/anaerobní blok. Objem umožňuje i doplňkovou tempo (Z3) jízdu nebo druhou kvalitní jednotku. Skladba MUSÍ být viditelně odlišná od nízkoobjemového týdne — víc hodin znamená víc a delších Z2 jízd, ne jen prodloužené verze stejných intervalů.
+Sportovec svoji kapacitu zadal záměrně — naplánuj mu k tomu blízkou náplň (cílový rozsah hodin viz DYNAMICKÝ KONTEXT), ne jen zlomek této kapacity. Nevyužitý čas bez fyziologického důvodu je promarněná příležitost k adaptaci.
 
 CTL/ATL/TSB PERIODIZACE:
 - CTL (Chronic Training Load, 42d): ideální nárůst max 5-8 TSS bodů týdně, jinak riziko přetrénování
@@ -2254,8 +2249,9 @@ DŮLEŽITÉ: Níže jsou TŘI ILUSTRAČNÍ příklady JSON FORMÁTU (SST, VO2max
 ]
 ===END_WORKOUTS_JSON===
 
-${updateFromDay?`Toto je AKTUALIZACE stávajícího týdne, ne nový plán od nuly. Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne ${updateFromDay} DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše (u "rest" dnů pole "nutrition" vynech). NEGENERUJ objekty pro dny před Dnem ${updateFromDay} — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly. U KAŽDÉHO netréninkového dne nezapomeň na pole "nutrition" podle sekce VÝŽIVA výše.`
-:`Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna), a pole "nutrition" u "rest" dnů vynech. U KAŽDÉHO netréninkového dne přidej pole "nutrition" podle sekce VÝŽIVA výše. Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.`}
+REŽIM GENEROVÁNÍ — přesný režim najdeš v sekci DYNAMICKÝ KONTEXT na konci tohoto promptu:
+- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: NOVÝ PLÁN": Vygeneruj JEDEN objekt pro KAŽDÝ ze 7 dnů týdne (day_number 1 až 7) — VČETNĚ volných/regeneračních dnů, u nich nastav "type":"rest", "title":"Volno" (nebo "Aktivní regenerace" pokud je to lehká jízda), "duration_min" buď 0 (čisté volno) nebo skutečnou délku (aktivní regenerace), "phases":[] (prázdné pole stačí, nerozepisuj strukturu volna), a pole "nutrition" u "rest" dnů vynech. U KAŽDÉHO netréninkového dne přidej pole "nutrition" podle sekce VÝŽIVA výše. Pole MUSÍ mít přesně 7 položek, seřazené podle "day_number" vzestupně, žádný den nesmí chybět.
+- Pokud DYNAMICKÝ KONTEXT říká "REŽIM: AKTUALIZACE OD DNE X": Vygeneruj JEDEN objekt pro KAŽDÝ den OD Dne X DO Dne 7 (jen zbývající/budoucí dny) — VČETNĚ volných dnů v tomto rozsahu, se stejnými pravidly pro "type":"rest" jako výše (u "rest" dnů pole "nutrition" vynech). NEGENERUJ objekty pro dny před Dnem X — ty už proběhly, jsou popsané v datech od uživatele jen pro kontext, a beze změny zůstávají tak, jak byly. U KAŽDÉHO netréninkového dne nezapomeň na pole "nutrition" podle sekce VÝŽIVA výše.
 
 TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   }
@@ -2263,17 +2259,29 @@ TEPRVE PO KOMPLETNÍM JSON BLOKU napiš textovou část v tomto pořadí:`;
   prompt+=`
 ODPOVÍDEJ VŽDY (textová část je jen stručné shrnutí a doporučení — NIKDY neopakuj konkrétní watty, délky intervalů, počty opakování ani strukturu odpočinků, ty patří VÝHRADNĚ do JSON bloku výše a zobrazují se sportovci v záložce Tréninky):
 1. Krátké shrnutí aktuální formy a strategie tohoto týdne (3-4 věty) — na základě čeho jsi plán takto sestavil (CTL/ATL/TSB, cíl, časová kapacita)
-2. Přehled dní jako seznam "Den 1" až "Den 7"${updateFromDay?` (dny 1 až ${updateFromDay-1} jen zopakuj beze změny z dat od uživatele, u dnů ${updateFromDay}-7 popiš aktualizovaný obsah)`:""}, u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování ${updateFromDay?`zbývajících dnů (Den ${updateFromDay} až 7)`:"dnů"} dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin ${updateFromDay?`ZBÝVAJÍCÍ do konce týdne`:"za týden"} je ${effWh}h — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z ${effWh}h, tj. ${(effWh*0.85).toFixed(1)}-${effWh}h), ne jen "neprekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 3 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
-3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit)${updateFromDay?`
-4. CO SE ZMĚNILO oproti původnímu plánu pro dny ${updateFromDay} až 7 a PROČ — konkrétně, s odkazem na to, co se reálně stalo/nestalo (splněné/nesplněné tréninky, skutečný výkon) nebo na změnu časové kapacity. Pokud se nic nemění, napiš to i tak ("plán pro zbytek týdne zůstává beze změny, protože...").`:""}
+2. Přehled dní jako seznam "Den 1" až "Den 7" (pokud DYNAMICKÝ KONTEXT říká režim "AKTUALIZACE OD DNE X", dny 1 až X-1 jen zopakuj beze změny z dat od uživatele, u dnů X-7 popiš aktualizovaný obsah; u režimu "NOVÝ PLÁN" popiš všech 7 dní stejně), u KAŽDÉHO dne JEDNA krátká věta s typem a účelem tréninku (např. "Den 1 – SST blok, budování FTP" nebo "Den 2 – volno, regenerace po SST") — BEZ wattů, délek, počtu intervalů (ty jen v JSON). Při sestavování dnů dodržuj: nikdy dva těžké intervalové dny za sebou bez rozestupu (pokud to fyziologie nevyžaduje jinak); CÍLOVÝ součet tréninkových hodin (přesný cílový rozsah je v sekci DYNAMICKÝ KONTEXT na konci promptu — u režimu aktualizace jde o ZBÝVAJÍCÍ hodiny do konce týdne, u nového plánu o celý týden) — sportovec tuto kapacitu zadal záměrně, plánuj ji tedy VYUŽÍT (typicky 85-100 % z cílové hodnoty), ne jen "nepřekročit" a naplánovat výrazně méně. Nižší objem než tento cíl zvol POUZE pokud je to fyziologicky odůvodněné (nízké TSB, riziko přetrénování, deload týden) — a v tom případě to explicitně napiš a zdůvodni v bodě 3 níže. NEPOUŽÍVEJ konkrétní názvy všedních dnů (pondělí, úterý...) — jen "Den 1"–"Den 7". Skladba a formáty tréninků se MUSÍ odvíjet od časové kapacity, aktuální formy (CTL/ATL/TSB) a cíle — nepoužívej mechanicky stejnou skladbu týden co týden ani nezávisle na objemu. Inspiruj se běžnými formáty používanými v etablovaných platformách/metodikách (TrainerRoad, Zwift, Wahoo SYSTM, Coggan power-based training, Seiler polarized model) i variabilitou typů (SST, threshold, over-under, VO2max, pyramidové intervaly, tempo, endurance Z2) — cílem je individualizované, ne šablonovité plánování.
+3. Na co si dát pozor tento týden (únava, TSB, riziko přetrénování, kdy plán upravit). Pokud je REŽIM "AKTUALIZACE OD DNE X", přidej i bod 4: CO SE ZMĚNILO oproti původnímu plánu pro dny X až 7 a PROČ — konkrétně, s odkazem na to, co se reálně stalo/nestalo (splněné/nesplněné tréninky, skutečný výkon) nebo na změnu časové kapacity. Pokud se nic nemění, napiš to i tak ("plán pro zbytek týdne zůstává beze změny, protože...").
 
 PŘED FINÁLNÍ ODPOVĚDÍ SI TICHO OVĚŘ (nedávej to do odpovědi, jen si to zkontroluj a případně oprav plán, než napíšeš JSON i text):
-(a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda. Pokud je uveden PŘEDCHOZÍ TÝDEN v datech níže, počítej do této kontroly i návaznost — pokud poslední den předchozího týdne byl intenzivní a splněný, nový Den 1 nesmí být zase intenzivní.
-(b) Sečti duration_min všech ${updateFromDay?`ZBÝVAJÍCÍCH (Den ${updateFromDay}-7)`:""} dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v rozsahu ${(effWh*0.85).toFixed(1)}-${effWh}h, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
+(a) Žádné dva po sobě jdoucí dny nejsou OBA intenzivní (SST/threshold/VO2max/tempo) — mezi dvěma takovými dny musí být den volno/regenerace nebo lehká Z2 jízda. Pokud je uveden PŘEDCHOZÍ TÝDEN v datech od uživatele, počítej do této kontroly i návaznost — pokud poslední den předchozího týdne byl intenzivní a splněný, nový Den 1 nesmí být zase intenzivní.
+(b) Sečti duration_min všech (u režimu aktualizace jen ZBÝVAJÍCÍCH dnů od X do 7) dnů s "type" JINÝM než "rest" a preveď na hodiny. Pokud součet nevychází v cílovém rozsahu ze sekce DYNAMICKÝ KONTEXT, uprav plán: prodluž Z2/endurance jízdy nebo přidej další trénink, dokud součet do rozsahu nespadne. Pokud záměrně plánuješ méně (fyziologický důvod), musí to být výslovně zdůvodněno v bodě 3.
 Teprve po této kontrole vypiš finální JSON a text.
 Buď stručný a věcný, bez omáčky. Watty a délky nikam v textu nepiš — jsou jen v JSON.
 Odpovídej v češtině.`;
   return prompt;
+}
+
+// Malá dynamická část — jediné místo, kde se do promptu dostávají konkrétní čísla.
+// Posílá se MIMO cachovanou statickou část, takže se pokaždé účtuje jen tahle
+// pár desítek/stovek tokenů, ne celý (~3700 tokenový) systémový prompt.
+function buildDynamicContext(updateFromDay,remainingHoursTarget){
+  const wh=S.weeklyHours||8;
+  const effWh=remainingHoursTarget!=null?remainingHoursTarget:wh;
+  const lines=["DYNAMICKÝ KONTEXT (mění se při každém volání — použij tato konkrétní čísla všude, kde text výše odkazuje na \"DYNAMICKÝ KONTEXT\"):"];
+  lines.push(`Deklarovaná týdenní časová kapacita: ${wh}h/týden`);
+  lines.push(`REŽIM: ${updateFromDay?`AKTUALIZACE OD DNE ${updateFromDay}`:`NOVÝ PLÁN`}`);
+  lines.push(`Cílový rozsah hodin (85-100 %): ${(effWh*0.85).toFixed(1)}-${effWh}h ${updateFromDay?"(zbývající do konce týdne)":"(za celý týden)"}`);
+  return lines.join("\n");
 }
 
 function buildAthleteContext(days=14){
@@ -2366,7 +2374,7 @@ async function askCoach(){
   try{
     const res=await fetch(S.workerUrl,{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system:buildCoachSystemPrompt(true),messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
+      body:JSON.stringify({task:"plan",system:{static:buildCoachSystemPrompt(true),dynamic:buildDynamicContext(null,null)},messages:[{role:"user",content:`${ctx}\n\nÚKOL: ${q}`}]})
     });
     const data=await res.json();
     const rawAns=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||JSON.stringify(data));
@@ -2426,7 +2434,7 @@ async function askAI(){
   try{
     const res=await fetch(S.workerUrl,{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
+      body:JSON.stringify({task:"chat",system:S.sysPrompt,messages:[{role:"user",content:`Kontext:\n${ctx}\n\nOtázka: ${q}`}]})
     });
     const data=await res.json();
     const ans=cleanAIText(data.content?.[0]?.text||apiErrorText(data)||JSON.stringify(data));
