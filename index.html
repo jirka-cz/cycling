@@ -1092,6 +1092,32 @@ function renderAICtx(){
   if(el)el.innerHTML=aiRideCtx.map(ctxRideSpan).join("");
 }
 
+// ── KOLA (LAPS) ZE STRAVA — PŘEDNOSTNÍ ZDROJ STRUKTURY TRÉNINKU ────────────────
+// Pokud byl trénink strukturovaný (ERG mód, Zwift workout, nebo ruční lap tlačítko),
+// Strava/Garmin/Zwift už mají hotové, zařízením zaznamenané hranice intervalů — to je
+// mnohem spolehlivější než cokoliv, co bychom si domýšleli z power streamu vlastní
+// heuristikou. Používáme laps jako PRVNÍ volbu, vlastní detekci ze streamu jen jako
+// záložní řešení pro jízdy bez laps (volné vyjížďky bez ručního/ERG rozdělení).
+async function fetchActivityLaps(token,id){
+  try{
+    const res=await fetch(`https://www.strava.com/api/v3/activities/${id}/laps`,{headers:{Authorization:`Bearer ${token}`}});
+    if(!res.ok)return null;
+    const laps=await res.json();
+    return Array.isArray(laps)?laps:null;
+  }catch(e){return null;}
+}
+function summarizeFromLaps(laps,ftp){
+  if(!laps||laps.length<2)return null; // 0-1 laps = nerozdělená jízda, laps nic neřeknou navíc
+  const zones=getZones(ftp);
+  const lines=laps.map((l,i)=>{
+    const w=Math.round(l.average_watts||0);
+    const zIdx=zones.findIndex(z=>w>=z.min&&w<z.max);
+    const z=zones[zIdx<0?zones.length-1:zIdx];
+    const durSec=l.moving_time||l.elapsed_time||0;
+    return `Lap ${l.lap_index||i+1}: ${fmtMinSec(durSec)} @ ${w}W (${ftp?Math.round(w/ftp*100)+"% FTP, ":""}${z.z}-${z.n})${l.average_heartrate?`, TF ${Math.round(l.average_heartrate)}bpm`:""}${l.average_cadence?`, kadence ${Math.round(l.average_cadence)}`:""}`;
+  });
+  return "Kola (laps) ze zařízení — PŘESNÁ hranice intervalů zaznamenaná přímo Garmin/Zwift/ERG módem, ne odhad z power streamu:\n"+lines.join("\n");
+}
 async function addToAI(id,name,date,watts,hr,tss,km){
   let entry=aiRideCtx.find(r=>r.id===id);
   if(!entry){entry={id,name,date,watts,hr,tss,km,structure:null};aiRideCtx.push(entry);}
@@ -1104,16 +1130,24 @@ async function addToAI(id,name,date,watts,hr,tss,km){
     entry.structure="loading";
     setTimeout(renderAICtx,100);
     try{
-      let sd=getRideStreams(id);
-      if(!sd){
-        const token=await getToken();
-        if(token){
+      const token=await getToken();
+      let structureText=null;
+      if(token){
+        const laps=await fetchActivityLaps(token,id);
+        structureText=summarizeFromLaps(laps,getCurrentFtp());
+      }
+      if(!structureText){
+        // záložní řešení: laps nejsou k dispozici (volná jízda) nebo jich je 0-1 →
+        // zkus vlastní detekci ze streamu jako dřív
+        let sd=getRideStreams(id);
+        if(!sd&&token){
           sd=await fetchRideStreamsFromStrava(token,{id});
           if(sd)saveRideStreams(id,sd);
         }
+        const stats=sd?detectRideStructure(sd,getCurrentFtp()):null;
+        structureText=stats?summarizeRideStructure(stats,getCurrentFtp()):"";
       }
-      const stats=sd?detectRideStructure(sd,getCurrentFtp()):null;
-      entry.structure=stats?summarizeRideStructure(stats,getCurrentFtp()):"";
+      entry.structure=structureText;
     }catch(e){
       entry.structure="";
     }
@@ -1196,7 +1230,20 @@ function detectRideStructure(sd,ftp){
       if(i<n){curZ=zi[i];segStart=i;}
     }
   }
-  // sluč krátké/šumové úseky se sousedním delším úsekem — práh je ZÓNOVĚ ZÁVISLÝ:
+  // KROK 1: sluč sousední úseky ve STEJNÉM "pásmu" (Z1-Z4 = nízké/střední, Z5-Z6 = vysoké)
+  // bez ohledu na délku. Důvod: pokud je cílový výkon intervalu blízko hranice Z5/Z6 (typicky
+  // když je FTP nastavené trochu jinak, než realita), normální kolísání výkonu přes tuhle
+  // hranici by jinak vytvořilo desítky střídajících se mikro-úseků uvnitř JEDNOHO souvislého
+  // úsilí — obě zóny mají nízký merge práh (viz níže), takže by se navzájem nesloučily.
+  const band=z=>z>=4?"high":"low";
+  const bandCollapsed=[];
+  segs.forEach(s=>{
+    const last=bandCollapsed[bandCollapsed.length-1];
+    if(last&&band(last.zone)===band(s.zone)){last.endI=s.endI;}
+    else{bandCollapsed.push({...s});}
+  });
+  segs=bandCollapsed;
+  // KROK 2: sluč krátké/šumové úseky se sousedním delším úsekem — práh je ZÓNOVĚ ZÁVISLÝ:
   // Z1-Z4 mají vyšší práh (90s), protože krátké výkyvy tam bývají terénní šum (kopec, refýlek);
   // Z5 VO2max a Z6 Anaerobní mají nízký práh (12s), protože skutečné mikro-bursty (Lactate Shuttle,
   // krátké VO2max špičky) jsou záměrně krátké a nechceme je smazat/rozředit do sousední zóny
@@ -2294,8 +2341,12 @@ function buildAthleteContext(days=14){
   const outdoorCount=recent.filter(r=>r.type==="Ride").length;
   const today=new Date().toLocaleDateString("cs-CZ",{weekday:"long",day:"numeric",month:"long"});
   const curFtp=getCurrentFtp();
+  const recentFtpChanges=(S.ftpManualEntries||[]).slice().sort((a,b)=>b.d.localeCompare(a.d)).slice(0,3);
+  const ftpHistoryLine=recentFtpChanges.length
+    ? `\nNedávné změny FTP: ${recentFtpChanges.map(e=>`${e.d}: ${e.f}W (${e.l})`).join("; ")}`
+    : "";
   return `Datum: ${today}
-Sportovec: ${S.name}, ${S.weight}kg, FTP ${curFtp}W (${(curFtp/S.weight).toFixed(2)} W/kg)
+Sportovec: ${S.name}, ${S.weight}kg, FTP ${curFtp}W (${(curFtp/S.weight).toFixed(2)} W/kg)${ftpHistoryLine}
 Forma (CTL): ${LATEST.ctl} | Únava (ATL): ${LATEST.atl} | Svěžest (TSB): ${LATEST.tsb}
 Tréninkový cíl: ${S.goal}
 Zdravotní stav: ${S.notes||"bez omezení"}
@@ -2405,7 +2456,7 @@ async function askCoach(){
 
 function setQ(q){const el=document.getElementById("ai-q");if(el)el.value=q;}
 
-const AUTO_RIDE_ANALYSIS_PROMPT="Zhodnoť přiloženou jízdu (případně jízdy) do detailu. Nejprve se podívej na pole 'Záměr dle názvu' — říká ti, jestli šlo o volnou vyjížďku (žádný konkrétní záměr, nehodnoť to jako intervalový trénink), pojmenovaný trénink (má konkrétní očekávanou strukturu — ověř, zda se detekovaná struktura/výkon s ní shoduje, a nesoulad výslovně okomentuj), nebo závod (jiná kritéria hodnocení, ne tréninkové zóny). Podle toho popiš STRUKTURU tréninku (rozcvička, jednotlivé intervaly/série - kolik opakování, jak dlouhé, v jaké zóně a wattech, odpočinky mezi nimi, závěr) na základě dat níže — pokud je u jízdy uvedená 'Detekovaná struktura', vycházej z ní a interpretuj ji (např. 3x20min SST, 6x5min VO2max apod.). Pak zhodnoť PROVEDENÍ: jak přesně jsem plnil cílové watty v jednotlivých úsecích, jak se vyvíjel poměr výkon/tep (W/TF) v čase (klesající výkon při stejném/rostoucím tepu = únava, tzv. decoupling), a jestli kadence odpovídala danému typu úseku. Nakonec posuď, jestli moje aktuálně nastavené FTP odpovídá realitě této jízdy — je poddimenzované (jízda byla nečekaně lehká, TF byla nízká, dokázal jsem výrazně překonat cílové zóny) nebo naopak nastřelené moc vysoko (nedokázal jsem splnit cílové watty, TF byla nepřiměřeně vysoká, výkon k závěru padal)? Odpověz konkrétně a věcně, žádné obecné fráze, a navrhni case-by-case další kroky.";
+const AUTO_RIDE_ANALYSIS_PROMPT="Zhodnoť přiloženou jízdu (případně jízdy) do detailu. Nejprve se podívej na pole 'Záměr dle názvu' — říká ti, jestli šlo o volnou vyjížďku (žádný konkrétní záměr, nehodnoť to jako intervalový trénink), pojmenovaný trénink (má konkrétní očekávanou strukturu — ověř, zda se detekovaná struktura/výkon s ní shoduje, a nesoulad výslovně okomentuj), nebo závod (jiná kritéria hodnocení, ne tréninkové zóny). Podle toho popiš STRUKTURU tréninku (rozcvička, jednotlivé intervaly/série - kolik opakování, jak dlouhé, v jaké zóně a wattech, odpočinky mezi nimi, závěr) na základě dat níže — pokud je u jízdy uvedená 'Detekovaná struktura', vycházej z ní a interpretuj ji (např. 3x20min SST, 6x5min VO2max apod.), ALE mírně nedůvěřuj velmi roztříštěné struktuře (desítky úseků pod 1 min u venkovní jízdy) — detekce ze streamu není dokonalá, zvlášť když cílový výkon leží blízko hranice dvou zón; pokud struktura vypadá nesmyslně roztříštěná oproti záměru z názvu, zvaž a napiš, že šlo pravděpodobně o souvislejší úsilí, které jen kolísalo kolem hranice zóny. Pak zhodnoť PROVEDENÍ: jak přesně jsem plnil cílové watty v jednotlivých úsecích, jak se vyvíjel poměr výkon/tep (W/TF) v čase (klesající výkon při stejném/rostoucím tepu = únava, tzv. decoupling), a jestli kadence odpovídala danému typu úseku. DŮLEŽITÁ KŘÍŽOVÁ KONTROLA: pokud je u některého úseku deklarovaná vysoká zóna (např. Z5/VO2max dle % aktuálního FTP), ale odpovídající TF zůstává nepřiměřeně nízko (u Z5/VO2max bychom čekali TF blízko individuálního maxima, ne hodnoty typické pro Z4/práh) — NEHODNOŤ to automaticky jako 'nedostatečnou vytrvalost/staminu'. Zvaž rovnocenně i alternativní vysvětlení: aktuálně nastavené FTP může být podhodnocené (nedávná změna, zotavení po nemoci/formy), takže to, co vypadá jako '115 % FTP' číselně, je fyziologicky spíš práh než VO2max — v tom případě to řekni explicitně a doporuč přehodnotit FTP, ne rovnou měnit typ tréninku na kratší/lehčí intervaly. Nakonec posuď, jestli moje aktuálně nastavené FTP odpovídá realitě této jízdy — je poddimenzované (jízda byla nečekaně lehká, TF byla nízká, dokázal jsem výrazně překonat cílové zóny) nebo naopak nastřelené moc vysoko (nedokázal jsem splnit cílové watty, TF byla nepřiměřeně vysoká, výkon k závěru padal)? Odpověz konkrétně a věcně, žádné obecné fráze, a navrhni case-by-case další kroky.";
 const AUTO_RIDE_COMPARISON_SUFFIX="\n\nPřiložil jsem více jízd najednou — kromě rozboru každé jízdy zvlášť je na závěr výslovně POROVNEJ mezi sebou (ideálně jde o stejný/podobný typ tréninku opakovaný v čase): jak se mění výkon při podobné TF (zlepšení/zhoršení aerobní kondice), jak se mění schopnost udržet cílové watty ve stejných úsecích, vývoj kadence, a jestli data ukazují na potřebu upravit FTP nebo strukturu tréninku.";
 
 async function askAI(){
@@ -2425,7 +2476,7 @@ async function askAI(){
 
   const ridesCtx=aiRideCtx.length>0
     ? "\n\nJízdy k analýze:\n"+aiRideCtx.map(r=>`- ${r.name} (${r.date}): ${r.watts}W průměr, TF ${r.hr}bpm, TSS ${r.tss}, ${r.km}km\n  Záměr dle názvu: ${rideNameHint(r.name)}`+
-        (r.structure&&r.structure!=="loading"?`\n  Detekovaná struktura (automaticky z power/TF/kadence dat):\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"")).join("\n")
+        (r.structure&&r.structure!=="loading"?`\n  Struktura tréninku:\n${r.structure.split("\n").map(l=>"  "+l).join("\n")}`:"")).join("\n")
     : "";
   const recent=RIDES.slice(0,5).map(r=>`${r.date} ${r.name}: ${r.watts}W TF${r.hr} TSS${effectiveTss(r)}`).join(" | ");
   const curFtp=getCurrentFtp();
